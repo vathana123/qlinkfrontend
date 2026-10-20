@@ -1,0 +1,123 @@
+import 'dart:async';
+
+import '../../features/chat/presentation/screens/create_group_screen.dart';
+import '../../features/chat/presentation/screens/select_group_members_screen.dart';
+import '../../features/chat/presentation/bloc/group_creation_cubit.dart';
+
+import '../../features/chat/data/models/chat_models.dart';
+import '../../features/chat/presentation/screens/chat_screen.dart';
+import '../../features/chat/presentation/screens/user_search_screen.dart';
+import '../../features/chat/presentation/screens/qr_scanner_screen.dart';
+import '../../features/user/presentation/screens/my_qr_screen.dart';
+import '../../features/user/presentation/screens/username_screen.dart';
+
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../features/auth/presentation/bloc/auth_bloc.dart';
+import '../../features/auth/presentation/screens/sign_in_screen.dart';
+import '../../features/auth/presentation/screens/sign_up_screen.dart';
+import '../../features/home/presentation/screens/home_screen.dart';
+import '../../features/home/presentation/screens/placeholder_screen.dart';
+import '../../features/settings/presentation/screens/settings_screen.dart';
+import '../../layout/main_layout.dart';
+
+String? authRedirect(AuthState auth, String location) {
+  final authPage = location == '/signin' || location == '/signup';
+  final starting = auth is AuthInitial || auth is AuthLoading && auth.startup;
+  if (starting) return location == '/startup' ? null : '/startup';
+  if (auth.user != null) {
+    return authPage || location == '/startup' ? '/chats' : null;
+  }
+  return authPage ? null : '/signin';
+}
+
+class RouterRefresh extends ChangeNotifier {
+  RouterRefresh(AuthBloc bloc) {
+    _subscription = bloc.stream.listen((_) => notifyListeners());
+  }
+  late final StreamSubscription<AuthState> _subscription;
+  @override
+  void dispose() {
+    _subscription.cancel();
+    super.dispose();
+  }
+}
+
+GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
+  initialLocation: '/startup',
+  refreshListenable: refresh,
+  redirect: (_, state) => authRedirect(auth.state, state.uri.path),
+  routes: [
+    GoRoute(path: '/', redirect: (_, _) => '/chats'),
+    GoRoute(
+      path: '/startup',
+      builder: (_, _) =>
+          const Scaffold(body: Center(child: CircularProgressIndicator())),
+    ),
+    GoRoute(path: '/signin', builder: (_, _) => const SignInScreen()),
+    GoRoute(path: '/signup', builder: (_, _) => const SignUpScreen()),
+    GoRoute(
+      path: '/create-group',
+      builder: (_, _) => const CreateGroupScreen(),
+    ),
+    GoRoute(
+      path: '/create-group/members',
+      redirect: (_, s) =>
+          s.extra is GroupCreationCubit ? null : '/create-group',
+      builder: (_, s) =>
+          SelectGroupMembersScreen(cubit: s.extra! as GroupCreationCubit),
+    ),
+    GoRoute(path: '/search', builder: (_, _) => const UserSearchScreen()),
+    GoRoute(path: '/scan', builder: (_, _) => const QrScannerScreen()),
+    GoRoute(path: '/my-qr', builder: (_, _) => const MyQrScreen()),
+    GoRoute(path: '/username', builder: (_, _) => const UsernameScreen()),
+    GoRoute(
+      path: '/conversation',
+      redirect: (_, s) => s.extra is Conversation ? null : '/chats',
+      builder: (_, s) => ChatScreen(conversation: s.extra! as Conversation),
+    ),
+    StatefulShellRoute.indexedStack(
+      builder: (_, _, shell) => MainLayout(shell: shell),
+      branches: [
+        StatefulShellBranch(
+          routes: [
+            GoRoute(path: '/chats', builder: (_, _) => const HomeScreen()),
+          ],
+        ),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/calls',
+              builder: (_, _) => const PlaceholderScreen(
+                title: 'Calls',
+                icon: Icons.call_outlined,
+                description: 'A familiar voice, wherever you are. Calling is not available yet.',
+              ),
+            ),
+          ],
+        ),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/contacts',
+              builder: (_, _) => const PlaceholderScreen(
+                title: 'Contacts',
+                icon: Icons.people_outline_rounded,
+                description: 'Your favorite people, all in one place. Contact features are not available yet.',
+              ),
+            ),
+          ],
+        ),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/settings',
+              builder: (_, _) => const SettingsScreen(),
+            ),
+          ],
+        ),
+      ],
+    ),
+  ],
+);
