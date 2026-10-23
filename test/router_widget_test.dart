@@ -19,20 +19,14 @@ void main() {
   test('redirect table prevents unauthenticated access and loops', () {
     expect(authRedirect(const AuthInitial(), '/chats'), '/startup');
     expect(authRedirect(const AuthInitial(), '/startup'), null);
-    for (final path in [
-      '/chats',
-      '/calls',
-      '/contacts',
-      '/settings',
-      '/startup',
-    ]) {
+    for (final path in ['/chats', '/profile', '/profile/edit', '/startup']) {
       expect(authRedirect(const AuthUnauthenticated(), path), '/signin');
     }
     expect(authRedirect(const AuthUnauthenticated(), '/signin'), null);
     expect(authRedirect(const AuthFailure('Error'), '/signup'), null);
     expect(authRedirect(AuthAuthenticated(user), '/signin'), '/chats');
     expect(authRedirect(AuthAuthenticated(user), '/chats'), null);
-    expect(authRedirect(AuthLoading(user: user), '/settings'), null);
+    expect(authRedirect(AuthLoading(user: user), '/profile'), null);
     expect(authRedirect(const AuthLoading(), '/signup'), null);
   });
   Future<AuthBloc> mount(
@@ -89,42 +83,42 @@ void main() {
     expect(tester.takeException(), null);
   });
   for (final mode in [ThemeMode.light, ThemeMode.dark]) {
-    testWidgets(
-      'home, tabs, settings, theme and signout work in ${mode.name}',
-      (tester) async {
-        await mount(tester, signedIn: true, mode: mode);
-        expect(find.text('Messages'), findsOneWidget);
-        await tester.tap(find.text('Calls'));
-        await tester.pumpAndSettle();
-        expect(find.text('Coming in a later phase'), findsOneWidget);
-        await tester.tap(find.text('Contacts'));
-        await tester.pumpAndSettle();
-        expect(find.text('More ways to connect'), findsOneWidget);
-        await tester.tap(find.text('Settings').last);
-        await tester.pumpAndSettle();
-        expect(find.text('maya@example.com'), findsOneWidget);
+    testWidgets('home, profile, theme and signout work in ${mode.name}', (
+      tester,
+    ) async {
+      await mount(tester, signedIn: true, mode: mode);
+      expect(find.text('Messages'), findsOneWidget);
+      await tester.tap(find.byTooltip('Your profile'));
+      await tester.pumpAndSettle();
+      expect(find.text('maya@example.com'), findsOneWidget);
+      for (final appearance in ['Dark', 'Light', 'System']) {
         await Scrollable.ensureVisible(
-          tester.element(find.text('Dark')),
+          tester.element(find.text(appearance)),
           alignment: .3,
         );
         await tester.pumpAndSettle();
-        await tester.tap(find.text('Dark'));
+        await tester.tap(find.text(appearance));
         await tester.pumpAndSettle();
-        await tester.scrollUntilVisible(
-          find.text('Sign out'),
-          150,
-          scrollable: find.byType(Scrollable).last,
+        final preferences = await SharedPreferences.getInstance();
+        expect(
+          preferences.getString(ThemeCubit.preferenceKey),
+          appearance.toLowerCase(),
         );
-        await Scrollable.ensureVisible(
-          tester.element(find.text('Sign out')),
-          alignment: .3,
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(find.text('Sign out'));
-        await tester.pumpAndSettle();
-        expect(find.text('Welcome back'), findsOneWidget);
-        expect(tester.takeException(), null);
-      },
-    );
+      }
+      await tester.scrollUntilVisible(
+        find.text('Sign out'),
+        150,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await Scrollable.ensureVisible(
+        tester.element(find.text('Sign out')),
+        alignment: .3,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Sign out'));
+      await tester.pumpAndSettle();
+      expect(find.text('Welcome back'), findsOneWidget);
+      expect(tester.takeException(), null);
+    });
   }
 }

@@ -3,8 +3,14 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 class BlurAppBar extends StatelessWidget implements PreferredSizeWidget {
-  const BlurAppBar({super.key, required this.title, this.actions});
+  const BlurAppBar({
+    super.key,
+    this.title = '',
+    this.titleWidget,
+    this.actions,
+  });
   final String title;
+  final Widget? titleWidget;
   final List<Widget>? actions;
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -13,13 +19,15 @@ class BlurAppBar extends StatelessWidget implements PreferredSizeWidget {
     child: BackdropFilter(
       filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
       child: AppBar(
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.w800,
-            letterSpacing: -.5,
-          ),
-        ),
+        title:
+            titleWidget ??
+            Text(
+              title,
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                letterSpacing: -.5,
+              ),
+            ),
         actions: actions,
         backgroundColor: Theme.of(context).colorScheme.surface
             .withValues(alpha: .78),

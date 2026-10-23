@@ -7,6 +7,7 @@ import '../../../chat/data/models/chat_models.dart';
 import '../../../chat/data/repositories/chat_repository.dart';
 import '../../../chat/presentation/bloc/rooms_cubit.dart';
 import '../widgets/blur_app_bar.dart';
+import '../../../../core/widgets/user_avatar.dart';
 import '../widgets/chat_list_tile.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -36,7 +37,75 @@ class _RoomsViewState extends State<_RoomsView> {
     extendBodyBehindAppBar: true,
     backgroundColor: Theme.of(context).colorScheme.surface.withValues(alpha: 0),
     appBar: BlurAppBar(
-      title: 'qLink',
+      titleWidget: BlocBuilder<AuthBloc, AuthState>(
+        builder: (context, state) {
+          final user = state.user;
+          final colors = Theme.of(context).colorScheme;
+          final username = user?.username;
+          final email = user?.email;
+          return Tooltip(
+            message: 'Your profile',
+            child: InkWell(
+              onTap: () => context.push('/profile'),
+              borderRadius: BorderRadius.circular(12),
+              child: SizedBox(
+                height: 48,
+                child: Row(
+                  children: [
+                    UserAvatar(
+                      name: user?.displayName ?? '',
+                      url: user?.avatarUrl,
+                      radius: 19,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            user?.displayName ?? '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  color: colors.onSurface,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.1,
+                                ),
+                          ),
+                          if (username != null && username.isNotEmpty)
+                            Text(
+                              '@$username',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelMedium
+                                  ?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                    height: 1.1,
+                                  ),
+                            )
+                          else
+                            Text(
+                              '$email',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelMedium
+                                  ?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                    height: 1.1,
+                                  ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
       actions: [
         IconButton(
           tooltip: 'Search users',
@@ -52,13 +121,13 @@ class _RoomsViewState extends State<_RoomsView> {
           tooltip: 'More options',
           onSelected: (value) => value == 'group'
               ? _navigate('/create-group')
-              : context.go('/settings'),
+              : context.push('/profile'),
           itemBuilder: (_) => [
             const PopupMenuItem(
               value: 'group',
               child: Text('Create New Group'),
             ),
-            const PopupMenuItem(value: 'settings', child: Text('Settings')),
+            const PopupMenuItem(value: 'profile', child: Text('Profile')),
           ],
         ),
         const SizedBox(width: 8),
@@ -73,7 +142,7 @@ class _RoomsViewState extends State<_RoomsView> {
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.only(
               top: MediaQuery.paddingOf(context).top + kToolbarHeight + 16,
-              bottom: MediaQuery.paddingOf(context).bottom + 100,
+              bottom: MediaQuery.paddingOf(context).bottom + 24,
             ),
             children: [
               Padding(

@@ -9,7 +9,6 @@ import '../../features/chat/presentation/screens/chat_screen.dart';
 import '../../features/chat/presentation/screens/user_search_screen.dart';
 import '../../features/chat/presentation/screens/qr_scanner_screen.dart';
 import '../../features/user/presentation/screens/my_qr_screen.dart';
-import '../../features/user/presentation/screens/username_screen.dart';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -18,9 +17,8 @@ import '../../features/auth/presentation/bloc/auth_bloc.dart';
 import '../../features/auth/presentation/screens/sign_in_screen.dart';
 import '../../features/auth/presentation/screens/sign_up_screen.dart';
 import '../../features/home/presentation/screens/home_screen.dart';
-import '../../features/home/presentation/screens/placeholder_screen.dart';
-import '../../features/settings/presentation/screens/settings_screen.dart';
-import '../../layout/main_layout.dart';
+import '../../features/user/presentation/screens/user_profile_screen.dart';
+import '../../features/user/presentation/screens/edit_profile_screen.dart';
 
 String? authRedirect(AuthState auth, String location) {
   final authPage = location == '/signin' || location == '/signup';
@@ -71,53 +69,16 @@ GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
     GoRoute(path: '/search', builder: (_, _) => const UserSearchScreen()),
     GoRoute(path: '/scan', builder: (_, _) => const QrScannerScreen()),
     GoRoute(path: '/my-qr', builder: (_, _) => const MyQrScreen()),
-    GoRoute(path: '/username', builder: (_, _) => const UsernameScreen()),
     GoRoute(
       path: '/conversation',
       redirect: (_, s) => s.extra is Conversation ? null : '/chats',
       builder: (_, s) => ChatScreen(conversation: s.extra! as Conversation),
     ),
-    StatefulShellRoute.indexedStack(
-      builder: (_, _, shell) => MainLayout(shell: shell),
-      branches: [
-        StatefulShellBranch(
-          routes: [
-            GoRoute(path: '/chats', builder: (_, _) => const HomeScreen()),
-          ],
-        ),
-        StatefulShellBranch(
-          routes: [
-            GoRoute(
-              path: '/calls',
-              builder: (_, _) => const PlaceholderScreen(
-                title: 'Calls',
-                icon: Icons.call_outlined,
-                description: 'A familiar voice, wherever you are. Calling is not available yet.',
-              ),
-            ),
-          ],
-        ),
-        StatefulShellBranch(
-          routes: [
-            GoRoute(
-              path: '/contacts',
-              builder: (_, _) => const PlaceholderScreen(
-                title: 'Contacts',
-                icon: Icons.people_outline_rounded,
-                description: 'Your favorite people, all in one place. Contact features are not available yet.',
-              ),
-            ),
-          ],
-        ),
-        StatefulShellBranch(
-          routes: [
-            GoRoute(
-              path: '/settings',
-              builder: (_, _) => const SettingsScreen(),
-            ),
-          ],
-        ),
-      ],
+    GoRoute(path: '/chats', builder: (_, _) => const HomeScreen()),
+    GoRoute(path: '/profile', builder: (_, _) => const UserProfileScreen()),
+    GoRoute(
+      path: '/profile/edit',
+      builder: (_, _) => const EditProfileScreen(),
     ),
   ],
 );
