@@ -1,4 +1,9 @@
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
+
 import '../datasources/chat_api.dart';
+import 'outgoing_queue.dart';
 import '../realtime/chat_event.dart';
 import '../realtime/chat_realtime.dart';
 import '../models/chat_models.dart';
@@ -14,8 +19,31 @@ class ChatRepository {
   final Stream<ChatEvent> events;
   final Stream<ChatConnection> connections;
   final ChatApi api;
-  // Pending voice drafts survive navigation within this authenticated session.
-  final Map<String, List<ChatMessage>> voiceDrafts = {};
+  late final outbox = OutgoingQueue(this);
+  void setAccount(String? account) => outbox.setAccount(account);
+  Future<void> dispose() => outbox.dispose();
+
+  Future<Uint8List> imageBytes(String fileId, CancelToken cancel) async {
+    final response = await api.dio.get<List<int>>(
+      '/api/v1/storage/files/$fileId/download',
+      options: Options(responseType: ResponseType.bytes),
+      cancelToken: cancel,
+    );
+    return Uint8List.fromList(response.data!);
+  }
+
+  Future<void> downloadFile(
+    String fileId,
+    String path,
+    CancelToken cancel,
+  ) async {
+    await api.dio.download(
+      '/api/v1/storage/files/$fileId/download',
+      path,
+      cancelToken: cancel,
+    );
+  }
+
   Future<ResultPage<PublicUser>> search(String keyword, {int page = 0}) async {
     final j = await api.get('users/search', {
       'q': keyword,
@@ -97,6 +125,7 @@ class ChatRepository {
     String? fileId,
     int? durationMs,
     String type = 'VOICE',
+    CancelToken? cancelToken,
   }) async {
     final j = await api.post(
       roomId == null ? 'chat/personal/messages' : 'chat/rooms/$roomId/messages',
@@ -110,6 +139,7 @@ class ChatRepository {
           'durationMs': durationMs,
         },
       },
+      cancelToken: cancelToken,
     );
     return SendResult(
       ChatRoom.fromJson(j['room'] as Map<String, dynamic>),

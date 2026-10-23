@@ -27,12 +27,44 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   Uint8List? _image;
   String? _error;
   bool _loading = false;
-  final _cancel = CancelToken();
+  var _cancel = CancelToken();
+  int _generation = 0;
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _ensureImage();
+  }
+
+  @override
+  void didUpdateWidget(covariant AttachmentBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final old = oldWidget.message;
+    final next = widget.message;
+    final sameMessage =
+        old.senderId == next.senderId &&
+        (old.clientMessageId.isNotEmpty
+            ? old.clientMessageId == next.clientMessageId
+            : old.id == next.id);
+    // A newly assigned file ID is the normal upload acknowledgement.
+    if (!sameMessage ||
+        old.type != next.type ||
+        (old.fileId != null && old.fileId != next.fileId) ||
+        (old.localPath != null &&
+            next.localPath != null &&
+            old.localPath != next.localPath)) {
+      _generation++;
+      _cancel.cancel();
+      _cancel = CancelToken();
+      _image = null;
+      _error = null;
+      _loading = false;
+    }
+    _ensureImage();
+  }
+
+  void _ensureImage() {
     if (widget.message.type == 'IMAGE' &&
-        widget.message.delivery == Delivery.sent &&
+        (widget.message.localPath != null || widget.message.isConfirmed) &&
         _image == null &&
         !_loading &&
         _error == null) {
@@ -41,31 +73,54 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   }
 
   Future<void> _loadImage() async {
+    if (_loading) return;
+    final repository = context.read<ChatRepository>();
+    final generation = _generation;
+    bool current() => mounted && generation == _generation;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final response = await context
-          .read<ChatRepository>()
-          .api
-          .dio
-          .get<List<int>>(
-            '/api/v1/storage/files/${widget.message.fileId}/download',
-            options: Options(responseType: ResponseType.bytes),
-            cancelToken: _cancel,
-          );
-      if (mounted) setState(() => _image = Uint8List.fromList(response.data!));
+      // Retain the sender's preview bytes before the send flow deletes its file.
+      final localPath = widget.message.localPath;
+      if (localPath != null) {
+        try {
+          final bytes = await File(localPath).readAsBytes();
+          if (!current()) return;
+          setState(() => _image = bytes);
+          return;
+        } catch (_) {
+          if (!current()) return;
+          // A confirmed message can still be downloaded if local cleanup won.
+        }
+      }
+      if (!current() ||
+          !widget.message.isConfirmed ||
+          widget.message.fileId == null) {
+        return;
+      }
+      final bytes = await repository.imageBytes(
+        widget.message.fileId!,
+        _cancel,
+      );
+      if (current()) {
+        setState(() => _image = bytes);
+      }
     } catch (_) {
-      if (mounted) setState(() => _error = 'Image unavailable. Tap to retry.');
+      if (current()) {
+        setState(() => _error = 'Image unavailable. Tap to retry.');
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (current()) setState(() => _loading = false);
     }
   }
 
   Future<void> _open() async {
-    if (_loading || widget.message.delivery != Delivery.sent) return;
-    final dio = context.read<ChatRepository>().api.dio;
+    if (_loading || !widget.message.isConfirmed) return;
+    final generation = _generation;
+    bool current() => mounted && generation == _generation;
+    final repository = context.read<ChatRepository>();
     setState(() {
       _loading = true;
       _error = null;
@@ -79,23 +134,20 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
         '_',
       );
       final path = '${folder.path}/$name';
-      await dio.download(
-        '/api/v1/storage/files/${widget.message.fileId}/download',
-        path,
-        cancelToken: _cancel,
-      );
-      if (!mounted) return;
+      if (!current()) return;
+      await repository.downloadFile(widget.message.fileId!, path, _cancel);
+      if (!current()) return;
       final result = await OpenFile.open(path);
       if (result.type != ResultType.done) throw StateError(result.message);
     } catch (_) {
-      if (mounted) {
+      if (current()) {
         setState(
           () => _error =
               'Unable to open file. Install a compatible app or tap to retry.',
         );
       }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (current()) setState(() => _loading = false);
     }
   }
 
@@ -104,6 +156,7 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
       _loadImage();
       return;
     }
+    final bytes = _image!;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (context) => Scaffold(
@@ -114,7 +167,7 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
             child: InteractiveViewer(
               minScale: .5,
               maxScale: 5,
-              child: Image.memory(_image!, fit: BoxFit.contain),
+              child: Image.memory(bytes, fit: BoxFit.contain),
             ),
           ),
         ),
@@ -146,6 +199,7 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
 
   @override
   void dispose() {
+    _generation++;
     _cancel.cancel();
     super.dispose();
   }
@@ -156,42 +210,47 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
     final metadata = m.attachment;
     final colors = Theme.of(context).colorScheme;
     final image = m.type == 'IMAGE';
-    return SizedBox(
-      width: 240,
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: image ? 320 : 240),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (image)
             InkWell(
-              onTap: m.delivery == Delivery.sent ? _preview : null,
+              onTap: _image != null || m.isConfirmed ? _preview : null,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: _image != null
-                    ? Image.memory(
-                        _image!,
-                        width: 240,
-                        fit: BoxFit.contain,
-                        cacheWidth: 640,
-                        errorBuilder: (_, _, _) =>
-                            const Text('Image preview unavailable'),
-                      )
-                    : m.localPath != null
-                    ? Image.file(
-                        File(m.localPath!),
-                        width: 240,
-                        fit: BoxFit.contain,
-                        cacheWidth: 640,
-                        errorBuilder: (_, _, _) =>
-                            const Icon(Icons.image_not_supported_outlined),
-                      )
-                    : SizedBox(
-                        height: 120,
-                        child: Center(
-                          child: _loading
-                              ? const CircularProgressIndicator()
-                              : const Icon(Icons.image_outlined),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 320,
+                    maxHeight: 360,
+                  ),
+                  child: _image != null
+                      ? Image.memory(
+                          _image!,
+                          fit: BoxFit.contain,
+                          cacheWidth: 640,
+                          errorBuilder: (_, _, _) =>
+                              const Text('Image preview unavailable'),
+                        )
+                      : m.localPath != null
+                      ? Image.file(
+                          File(m.localPath!),
+                          fit: BoxFit.contain,
+                          cacheWidth: 640,
+                          errorBuilder: (_, _, _) =>
+                              const Icon(Icons.image_not_supported_outlined),
+                        )
+                      : SizedBox(
+                          height: 120,
+                          child: Center(
+                            child: _loading && m.isConfirmed
+                                ? const CircularProgressIndicator()
+                                : const Icon(Icons.image_outlined),
+                          ),
                         ),
-                      ),
+                ),
               ),
             ),
           if (!image)
@@ -222,19 +281,11 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
                 ),
               ),
             ),
-          if (metadata != null)
+          if (metadata != null && !image)
             Text(
               readableFileSize(metadata.sizeBytes),
               style: Theme.of(context).textTheme.labelSmall,
             ),
-          if (m.delivery == Delivery.sending) ...[
-            LinearProgressIndicator(value: m.uploadProgress),
-            Text(
-              m.uploadProgress < 1
-                  ? 'Uploading ${(m.uploadProgress * 100).round()}%'
-                  : 'Sending…',
-            ),
-          ],
           if (_error != null)
             TextButton(
               onPressed: image ? _loadImage : _open,

@@ -36,13 +36,40 @@ class ChatEvent {
             'id',
             'senderId',
             'clientMessageId',
-            'content',
             'createdAt',
           ].every((key) => text(m[key])) ||
+          m['content'] is! String ||
           (m['content'] as String).length > 4000 ||
-          (m['type'] != null && m['type'] != 'TEXT') ||
           DateTime.tryParse(m['createdAt'] as String) == null) {
         return null;
+      }
+      bool positiveInt(dynamic value) => value is int && value > 0;
+      final content = m['content'] as String;
+      // Missing type retains the existing legacy TEXT behavior.
+      switch (m['type'] ?? 'TEXT') {
+        case 'TEXT':
+          if (content.trim().isEmpty) return null;
+        case 'VOICE':
+          if (content.isNotEmpty ||
+              !text(m['fileId']) ||
+              !positiveInt(m['durationMs']) ||
+              !text(m['audioContentType']) ||
+              !positiveInt(m['audioSizeBytes'])) {
+            return null;
+          }
+        case 'IMAGE':
+        case 'FILE':
+          final attachment = m['attachment'];
+          if (content.isNotEmpty ||
+              !text(m['fileId']) ||
+              attachment is! Map<String, dynamic> ||
+              !text(attachment['originalName']) ||
+              !text(attachment['contentType']) ||
+              !positiveInt(attachment['sizeBytes'])) {
+            return null;
+          }
+        default:
+          return null;
       }
       ChatRoom? room;
       if (j['room'] != null) {

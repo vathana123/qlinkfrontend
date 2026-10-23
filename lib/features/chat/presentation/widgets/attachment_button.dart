@@ -117,22 +117,9 @@ class _AttachmentButtonState extends State<AttachmentButton> {
     },
     builder: (context, state) {
       final colors = Theme.of(context).colorScheme;
-      if (state.busy) {
-        return Padding(
-          padding: const EdgeInsets.all(12),
-          child: SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(
-              color: colors.primary,
-              strokeWidth: 2,
-            ),
-          ),
-        );
-      }
       return PopupMenuButton<AttachmentSource>(
         tooltip: 'Attach files',
-        enabled: !widget.busy,
+        enabled: !widget.busy && !state.busy,
         icon: Icon(
           Icons.add,
           color: widget.busy ? colors.onSurfaceVariant : colors.primary,

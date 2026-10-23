@@ -199,7 +199,7 @@ void main() {
     expect(cubit.state.hasMore, isFalse);
     fail = true;
     await cubit.load(refresh: true);
-    expect(cubit.state.error, 'Unavailable');
+    expect(cubit.state.error, 'Request failed. Please retry.');
     expect(cubit.state.items, hasLength(1));
     await cubit.close();
   });
@@ -395,7 +395,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Alex'));
       await tester.pumpAndSettle();
-      expect(find.text('No messages yet'), findsOneWidget);
+      expect(find.text('Hello'), findsOneWidget);
+      expect(find.text('No messages yet'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     });

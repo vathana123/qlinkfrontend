@@ -78,6 +78,29 @@ Map<String, dynamic> eventJson(
 ChatEvent event(Map<String, dynamic> m, {String type = 'PERSONAL'}) =>
     ChatEvent.parse(jsonEncode(eventJson(m, type: type)))!;
 
+Map<String, dynamic> media(
+  String type,
+  String id, {
+  String sender = 'bob',
+  String? client,
+  int minute = 1,
+}) => {
+  ...msg(id, sender: sender, client: client, minute: minute),
+  'type': type,
+  'content': '',
+  'fileId': 'file-$id',
+  if (type == 'VOICE') ...{
+    'durationMs': 1000,
+    'audioContentType': 'audio/wav',
+    'audioSizeBytes': 32044,
+  } else
+    'attachment': {
+      'originalName': type == 'IMAGE' ? 'photo.png' : 'document.pdf',
+      'contentType': type == 'IMAGE' ? 'image/png' : 'application/pdf',
+      'sizeBytes': 1024,
+    },
+};
+
 class FakeSocket implements ChatSocket {
   FakeSocket(this.token, this.callbacks);
   final String token;
@@ -142,6 +165,239 @@ class Harness {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('TEXT and legacy text remain valid; all media accept empty content', () {
+    for (final type in ['TEXT', 'VOICE', 'IMAGE', 'FILE']) {
+      final message = type == 'TEXT' ? msg('one') : media(type, 'one');
+      for (final roomType in ['PERSONAL', 'GROUP_PRIVATE', 'GROUP_PUBLIC']) {
+        final parsed = ChatEvent.parse(
+          jsonEncode(eventJson(message, type: roomType)),
+        );
+        expect(parsed, isNotNull, reason: '$roomType/$type');
+        expect(parsed!.message.id, 'one');
+        expect(parsed.message.clientMessageId, 'one');
+        expect(parsed.message.type, type);
+        expect(parsed.message.content, type == 'TEXT' ? 'message one' : '');
+        if (type == 'VOICE') {
+          expect(parsed.message.durationMs, 1000);
+          expect(parsed.message.audioSizeBytes, 32044);
+        } else if (type != 'TEXT') {
+          expect(parsed.message.attachment!.sizeBytes, 1024);
+        }
+      }
+    }
+    final legacy = msg('legacy')..remove('type');
+    expect(event(legacy).message.type, 'TEXT');
+    expect(event({...legacy, 'type': null}).message.type, 'TEXT');
+  });
+
+  test(
+    'unsupported types and missing or malformed media metadata are rejected',
+    () {
+      final invalid = <Map<String, dynamic>>[
+        {...msg('one'), 'type': 'VIDEO'},
+        {...msg('one'), 'type': 42},
+        {...msg('one'), 'content': ''},
+        {...msg('one'), 'content': '   '},
+        {...msg('one'), 'content': 'a' * 4001},
+      ];
+      for (final type in ['VOICE', 'IMAGE', 'FILE']) {
+        final valid = media(type, 'one');
+        for (final field in ['fileId', 'content']) {
+          invalid.add({...valid}..remove(field));
+          invalid.add({...valid, field: 42});
+        }
+        invalid.add({...valid, 'fileId': ''});
+        invalid.add({...valid, 'content': 'unexpected text'});
+        if (type == 'VOICE') {
+          for (final field in [
+            'durationMs',
+            'audioContentType',
+            'audioSizeBytes',
+          ]) {
+            invalid.add({...valid}..remove(field));
+            invalid.add({...valid, field: null});
+            invalid.add({...valid, field: ''});
+          }
+          for (final field in ['durationMs', 'audioSizeBytes']) {
+            for (final value in [0, -1, 1.5, '1000']) {
+              invalid.add({...valid, field: value});
+            }
+          }
+          invalid.add({...valid, 'audioContentType': 42});
+        } else {
+          invalid.add({...valid}..remove('attachment'));
+          invalid.add({...valid, 'attachment': []});
+          for (final field in ['originalName', 'contentType', 'sizeBytes']) {
+            final metadata = Map<String, dynamic>.from(
+              valid['attachment'] as Map,
+            );
+            invalid.add({
+              ...valid,
+              'attachment': {...metadata}..remove(field),
+            });
+            invalid.add({
+              ...valid,
+              'attachment': {...metadata, field: null},
+            });
+            invalid.add({
+              ...valid,
+              'attachment': {...metadata, field: ''},
+            });
+          }
+          for (final value in [0, -1, 1.5, '1024']) {
+            invalid.add({
+              ...valid,
+              'attachment': {
+                ...valid['attachment'] as Map<String, dynamic>,
+                'sizeBytes': value,
+              },
+            });
+          }
+        }
+      }
+      for (final message in invalid) {
+        expect(
+          ChatEvent.parse(jsonEncode(eventJson(message))),
+          isNull,
+          reason: jsonEncode(message),
+        );
+      }
+    },
+  );
+
+  for (final roomType in ['PERSONAL', 'GROUP_PRIVATE', 'GROUP_PUBLIC']) {
+    test(
+      '$roomType raw media events reach ChatCubit without history refresh',
+      () async {
+        final h = Harness();
+        final socket = await h.connect();
+        final adapter = FakeAdapter(
+          (_) => throw StateError('Unexpected REST request'),
+        );
+        final cubit = ChatCubit(
+          ChatRepository(
+            ChatApi(Dio()..httpClientAdapter = adapter),
+            realtime: h.realtime,
+          ),
+          Conversation.fromRoom(ChatRoom.fromJson(room(type: roomType))),
+          'alice',
+        );
+        addTearDown(() async {
+          await cubit.close();
+          await h.realtime.dispose();
+        });
+        for (final (index, type) in ['VOICE', 'IMAGE', 'FILE'].indexed) {
+          final body = jsonEncode(
+            eventJson(media(type, type, minute: index), type: roomType),
+          );
+          socket.receive!(body);
+          socket.receive!(body);
+        }
+        await until(() => cubit.state.messages.length == 3);
+        expect(cubit.state.messages.map((m) => m.type), [
+          'FILE',
+          'IMAGE',
+          'VOICE',
+        ]);
+        expect(
+          cubit.state.messages.every((m) => m.delivery == Delivery.sent),
+          isTrue,
+        );
+        expect(adapter.requests, isEmpty);
+        socket.receive!(
+          jsonEncode(
+            eventJson({
+              ...media('VOICE', 'bad'),
+              'fileId': null,
+            }, type: roomType),
+          ),
+        );
+        await tick();
+        expect(cubit.state.messages, hasLength(3));
+      },
+    );
+  }
+
+  for (final type in ['VOICE', 'IMAGE', 'FILE']) {
+    for (final eventFirst in [true, false]) {
+      test(
+        '$type socket confirmation ${eventFirst ? 'before' : 'after'} REST remains unique',
+        () async {
+          final h = Harness();
+          final socket = await h.connect();
+          final pending = Completer<ResponseBody>();
+          final saved = media(
+            type,
+            'server-id',
+            sender: 'alice',
+            client: 'client-id',
+          );
+          final adapter = FakeAdapter((_) => pending.future);
+          final cubit = ChatCubit(
+            ChatRepository(
+              ChatApi(Dio()..httpClientAdapter = adapter),
+              realtime: h.realtime,
+            ),
+            const Conversation(PublicUser('bob', 'Bob'), roomId: 'room'),
+            'alice',
+          );
+          addTearDown(() async {
+            await cubit.close();
+            await h.realtime.dispose();
+          });
+          // Already uploaded draft: exercise the existing send path without file I/O.
+          final sending = cubit.retry(
+            ChatMessage(
+              id: 'temporary-id',
+              senderId: 'alice',
+              clientMessageId: 'client-id',
+              content: '',
+              createdAt: DateTime.utc(2026, 10, 18, 1, 1),
+              type: type,
+              fileId: saved['fileId'] as String,
+              durationMs: saved['durationMs'] as int?,
+              delivery: Delivery.failed,
+              attachment: type == 'VOICE'
+                  ? null
+                  : AttachmentMetadata.fromJson(
+                      saved['attachment'] as Map<String, dynamic>,
+                    ),
+            ),
+          );
+          await until(() => adapter.requests.isNotEmpty);
+          expect(cubit.state.messages.single.id, 'temporary-id');
+          expect(cubit.state.messages.single.delivery, Delivery.sending);
+          final body = jsonEncode(eventJson(saved));
+          if (eventFirst) {
+            socket.receive!(body);
+            socket.receive!(body);
+            await until(
+              () => cubit.state.messages.single.delivery == Delivery.sent,
+            );
+          }
+          pending.complete(
+            response(
+              envelope({'room': room(message: saved), 'message': saved}),
+            ),
+          );
+          expect(await sending, isTrue);
+          socket.receive!(body);
+          socket.receive!(body);
+          await tick();
+          expect(cubit.state.messages, hasLength(1));
+          expect(cubit.state.messages.single.id, 'server-id');
+          expect(cubit.state.messages.single.clientMessageId, 'client-id');
+          expect(cubit.state.messages.single.delivery, Delivery.sent);
+          expect(cubit.state.error, isNull);
+          expect(adapter.requests, hasLength(1));
+          expect(
+            adapter.requests.single.path,
+            '/api/v1/chat/rooms/room/messages',
+          );
+        },
+      );
+    }
+  }
   test(
     'URL derives emulator WS and production WSS without credentials or query',
     () {

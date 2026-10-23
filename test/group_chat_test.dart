@@ -81,7 +81,7 @@ void main() {
       expect(cubit.state.filtered, isEmpty);
       fail = true;
       await cubit.loadContacts();
-      expect(cubit.state.error, 'Offline');
+      expect(cubit.state.error, 'Request failed. Please retry.');
       expect(cubit.state.selected, {'bob'});
       fail = false;
       await cubit.loadContacts();
@@ -125,7 +125,7 @@ void main() {
         cubit.photo(base64Decode('aGVsbG8='));
         cubit.toggle('bob');
         await cubit.create();
-        expect(cubit.state.error, 'Try again');
+        expect(cubit.state.error, 'Request failed. Please retry.');
         expect(cubit.state.name, '  Friends  ');
         expect(cubit.state.selected, {'bob'});
         expect(cubit.state.photo, isNotNull);
@@ -259,7 +259,7 @@ void main() {
         expect(find.text('2 selected'), findsOneWidget);
         await tester.tap(find.text('Create'));
         await tester.pumpAndSettle();
-        expect(find.text('Please retry'), findsOneWidget);
+        expect(find.text('Request failed. Please retry.'), findsOneWidget);
         expect(find.text('2 selected'), findsOneWidget);
         fail = false;
         await tester.tap(find.text('Create'));

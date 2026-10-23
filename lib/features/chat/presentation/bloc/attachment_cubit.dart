@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -26,7 +24,7 @@ class AttachmentCubit extends Cubit<AttachmentSelection> {
   final AttachmentPicker picker;
   AttachmentSource? _source;
   Future<void> pick(AttachmentSource source) async {
-    if (state.busy || chat.state.sending) return;
+    if (state.busy) return;
     _source = source;
     emit(const AttachmentSelection(busy: true));
     try {
@@ -42,40 +40,46 @@ class AttachmentCubit extends Cubit<AttachmentSelection> {
   }
 
   Future<void> confirm(List<XFile> files) async {
-    if (state.busy || files.isEmpty || _source == null || chat.state.sending) {
-      return;
-    }
+    if (state.busy || files.isEmpty || _source == null) return;
+    final source = _source!;
+    final api = chat.repository.api;
+    final selectedPicker = picker;
     emit(const AttachmentSelection(busy: true));
+    final pending = <Future<bool>>[];
     final failures = <String>[];
-    try {
-      final policy = await chat.repository.api.get('storage/files/policy');
-      for (final file in files) {
-        if (isClosed || chat.isClosed) break;
-        try {
-          final prepared = await picker.prepare(
-            file,
-            _source!,
-            policy['maxSizeBytes'] as int,
-            policy['extensions'] as Map<String, dynamic>,
-          );
-          if (isClosed || chat.isClosed || chat.state.sending) {
-            await File(prepared.path).delete();
-            break;
-          }
-          await chat.sendAttachment(prepared.path, prepared.metadata);
-        } catch (e) {
-          failures.add(chatError(e));
-        }
-      }
-      if (!isClosed) {
-        emit(
-          AttachmentSelection(
-            error: failures.isEmpty ? null : failures.join('\n'),
+    for (final file in files) {
+      try {
+        final metadata = await selectedPicker.describe(file);
+        pending.add(
+          chat.sendAttachment(
+            file.path,
+            metadata,
+            ownsFile: false,
+            prepare: (cancel) async {
+              final policy = await api.uploadPolicy(cancelToken: cancel);
+              if (cancel.isCancelled) throw cancel.cancelError!;
+              return selectedPicker.prepare(
+                file,
+                source,
+                policy['maxSizeBytes'] as int,
+                policy['extensions'] as Map<String, dynamic>,
+              );
+            },
           ),
         );
+      } catch (e) {
+        failures.add(chatError(e));
       }
-    } catch (e) {
-      if (!isClosed) emit(AttachmentSelection(error: chatError(e)));
     }
+    // Selection is complete; uploads continue in the session queue, independently
+    // of this control and of the conversation screen's lifetime.
+    if (!isClosed) {
+      emit(
+        AttachmentSelection(
+          error: failures.isEmpty ? null : failures.join('\n'),
+        ),
+      );
+    }
+    await Future.wait(pending);
   }
 }

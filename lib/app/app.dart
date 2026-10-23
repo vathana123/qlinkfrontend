@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../features/chat/data/realtime/chat_realtime.dart';
@@ -29,12 +31,21 @@ class QLinkApp extends StatefulWidget {
 }
 
 class _QLinkAppState extends State<QLinkApp> {
+  late final _chat = ChatRepository(
+    ChatApi(widget.auth.repository.dio),
+    realtime: widget.realtime,
+  );
+  late final StreamSubscription<AuthState> _chatSession;
   late final RouterRefresh _refresh = RouterRefresh(widget.auth);
   late final GoRouter _router = createRouter(widget.auth, _refresh);
   RealtimeSession? _session;
   @override
   void initState() {
     super.initState();
+    _chat.setAccount(widget.auth.state.user?.id);
+    _chatSession = widget.auth.stream.listen(
+      (state) => _chat.setAccount(state.user?.id),
+    );
     if (widget.realtime != null) {
       _session = RealtimeSession(widget.auth, widget.realtime!);
     }
@@ -44,6 +55,8 @@ class _QLinkAppState extends State<QLinkApp> {
   @override
   void dispose() {
     _session?.dispose();
+    unawaited(_chatSession.cancel());
+    unawaited(_chat.dispose());
     _router.dispose();
     _refresh.dispose();
     widget.auth.close();
@@ -52,11 +65,8 @@ class _QLinkAppState extends State<QLinkApp> {
   }
 
   @override
-  Widget build(BuildContext context) => RepositoryProvider(
-    create: (_) => ChatRepository(
-      ChatApi(widget.auth.repository.dio),
-      realtime: widget.realtime,
-    ),
+  Widget build(BuildContext context) => RepositoryProvider.value(
+    value: _chat,
     child: MultiBlocProvider(
       providers: [
         BlocProvider.value(value: widget.auth),

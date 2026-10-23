@@ -16,6 +16,7 @@ import 'package:qlinkfrontend/features/chat/presentation/bloc/chat_cubit.dart';
 import 'package:qlinkfrontend/features/chat/presentation/bloc/voice_recorder_cubit.dart';
 import 'package:qlinkfrontend/features/chat/presentation/widgets/voice_input.dart';
 import 'package:qlinkfrontend/features/chat/presentation/widgets/voice_bubble.dart';
+import 'package:qlinkfrontend/features/chat/presentation/screens/chat_screen.dart';
 
 import 'support/fakes.dart';
 
@@ -51,10 +52,26 @@ class FakeRecorder implements VoiceRecorder {
   }
 }
 
+class ComposerChatCubit extends ChatCubit {
+  ComposerChatCubit()
+    : super(
+        ChatRepository(ChatApi(Dio())),
+        const Conversation(PublicUser('other', 'Other'), roomId: 'room'),
+        'me',
+      );
+  final sent = <(String, int)>[];
+  @override
+  Future<bool> sendVoice(String path, int durationMs) async {
+    sent.add((path, durationMs));
+    return true;
+  }
+}
+
 class FakePlayer extends AudioPlayer {
   bool active = false, released = false;
   int loads = 0, stops = 0;
   final updates = StreamController<PlayerState>.broadcast();
+  final positions = StreamController<Duration>.broadcast();
   @override
   bool get playing => active;
   @override
@@ -62,7 +79,7 @@ class FakePlayer extends AudioPlayer {
   @override
   Stream<PlayerState> get playerStateStream => updates.stream;
   @override
-  Stream<Duration> get positionStream => const Stream.empty();
+  Stream<Duration> get positionStream => positions.stream;
   void notify() => updates.add(PlayerState(active, ProcessingState.ready));
   @override
   Future<Duration?> setAudioSource(
@@ -99,6 +116,7 @@ class FakePlayer extends AudioPlayer {
     released = true;
     await super.dispose();
     await updates.close();
+    await positions.close();
   }
 }
 
@@ -157,7 +175,7 @@ void main() {
     },
   );
   test(
-    'release finalizes a recording and transfers ownership to send flow',
+    'finish finalizes a recording and transfers ownership to send flow',
     () async {
       final fake = FakeRecorder();
       final path = '${temporary.path}/ok.wav';
@@ -264,7 +282,7 @@ void main() {
     });
   }
   testWidgets(
-    'holding the microphone starts and sliding left cancels without sending',
+    'tapping microphone hides input and Delete cancels without sending',
     (tester) async {
       final fake = FakeRecorder();
       final recorder = VoiceRecorderCubit(
@@ -286,16 +304,18 @@ void main() {
           ),
         ),
       );
-      final gesture = await tester.startGesture(
-        tester.getCenter(find.byIcon(Icons.mic)),
-      );
-      await tester.pump(const Duration(milliseconds: 600));
+      await tester.tap(find.byTooltip('Start recording'));
       await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
       expect(fake.starts, 1);
       expect(recorder.state.phase, RecordingPhase.recording);
-      await gesture.moveBy(const Offset(-100, 0));
-      await tester.pump();
-      await gesture.up();
+      expect(find.byType(TextField), findsNothing);
+      expect(find.byTooltip('Send voice message'), findsOneWidget);
+      expect(find.byWidgetPredicate((widget) =>
+          widget is Text &&
+          widget.semanticsLabel?.startsWith('Recording duration ') == true),
+          findsOneWidget);
+      await tester.tap(find.byTooltip('Cancel recording'));
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       });
@@ -306,6 +326,61 @@ void main() {
       text.dispose();
     },
   );
+  testWidgets('composer sends a tapped recording through ChatCubit', (
+    tester,
+  ) async {
+    final fake = FakeRecorder();
+    final path = '${temporary.path}/composer.wav';
+    final recorder = VoiceRecorderCubit(
+      recorder: fake,
+      pathFactory: () async => path,
+    );
+    final chat = ComposerChatCubit();
+    final text = TextEditingController();
+    await tester.pumpWidget(
+      BlocProvider<ChatCubit>.value(
+        value: chat,
+        child: MaterialApp(
+          home: Scaffold(
+            body: VoiceInput(
+              controller: text,
+              onSend: () {},
+              busy: false,
+              recorder: recorder,
+              attachmentButton: const Icon(Icons.add),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(find.byIcon(Icons.add), findsOneWidget);
+    await tester.tap(find.byTooltip('Start recording'));
+    await tester.pump();
+    expect(find.byIcon(Icons.add), findsNothing);
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+    });
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(recorder.state.elapsedMs, greaterThanOrEqualTo(1000));
+    expect(find.byWidgetPredicate((widget) =>
+        widget is Text &&
+        widget.semanticsLabel?.startsWith('Recording duration ') == true),
+        findsOneWidget);
+    await tester.tap(find.byTooltip('Send voice message'));
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pumpAndSettle();
+    expect(chat.sent, hasLength(1));
+    expect(chat.sent.single.$1, path);
+    expect(chat.sent.single.$2, greaterThanOrEqualTo(300));
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.byIcon(Icons.add), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    await tester.runAsync(() => chat.close());
+    text.dispose();
+  });
   testWidgets(
     'voice bubbles render, pause/resume, stop the previous player and dispose',
     (tester) async {
@@ -356,6 +431,115 @@ void main() {
       expect(b.released, isTrue);
     },
   );
+  testWidgets(
+    'playing voice survives row movement and scrolling, then stops on lifecycle and disposal',
+    (tester) async {
+      final player = FakePlayer();
+      final scroll = ScrollController();
+      final repo = ChatRepository(ChatApi(Dio()));
+      ChatMessage voice(String id) => ChatMessage(
+        id: id,
+        senderId: 'other',
+        clientMessageId: 'stable-voice',
+        content: '',
+        createdAt: DateTime.utc(2026),
+        type: 'VOICE',
+        fileId: 'voice-file',
+        durationMs: 10000,
+      );
+      var messages = [voice('temporary')];
+      Future<void> show() async {
+        final indices = {
+          for (var i = 0; i < messages.length; i++)
+            chatMessageKey(messages[i]): i,
+        };
+        await tester.pumpWidget(
+          RepositoryProvider.value(
+            value: repo,
+            child: MaterialApp(
+              home: Scaffold(
+                body: SizedBox(
+                  height: 160,
+                  child: ListView.builder(
+                    controller: scroll,
+                    itemCount: messages.length,
+                    findChildIndexCallback: (key) => indices[key],
+                    itemBuilder: (_, i) => SizedBox(
+                      key: chatMessageKey(messages[i]),
+                      height: 100,
+                      child: messages[i].isVoice
+                          ? VoiceBubble(
+                              message: messages[i],
+                              createPlayer: () => player,
+                            )
+                          : Text(messages[i].content),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      await show();
+      await tester.tap(find.byTooltip('Play voice message'));
+      await tester.pumpAndSettle();
+      player.positions.add(const Duration(seconds: 3));
+      await tester.pump();
+      final original = tester.state(find.byType(VoiceBubble));
+      messages = [
+        ChatMessage(
+          id: 'text',
+          senderId: 'me',
+          clientMessageId: 'text',
+          content: 'new text',
+          createdAt: DateTime.utc(2026, 1, 2),
+        ),
+        voice('server-id'),
+      ];
+      await show();
+      expect(tester.state(find.byType(VoiceBubble)), same(original));
+      expect(player.active, isTrue);
+      expect(player.loads, 1);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byType(LinearProgressIndicator),
+            )
+            .value,
+        .3,
+      );
+      messages.addAll(
+        List.generate(
+          30,
+          (i) => ChatMessage(
+            id: 'older-$i',
+            senderId: 'me',
+            clientMessageId: 'older-$i',
+            content: 'older message $i',
+            createdAt: DateTime.utc(2025),
+          ),
+        ),
+      );
+      await show();
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      expect(original.mounted, isTrue);
+      expect(player.active, isTrue);
+      expect(player.released, isFalse);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pumpAndSettle();
+      expect(player.active, isFalse);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      expect(player.released, isTrue);
+      scroll.dispose();
+    },
+  );
+
   test('playback streams only requested bytes through Dio', () async {
     final adapter = FakeAdapter(
       (r) => ResponseBody(

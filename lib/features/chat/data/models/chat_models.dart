@@ -10,7 +10,7 @@ class PublicUser {
   );
 }
 
-enum Delivery { sending, sent, failed }
+enum Delivery { sending, sent, delivered, seen, failed }
 
 class ChatMessage {
   const ChatMessage({
@@ -28,6 +28,8 @@ class ChatMessage {
     this.audioSizeBytes,
     this.localPath,
     this.uploadProgress = 0,
+    this.sendError,
+    this.localCreatedAt,
   });
   final String id, senderId, clientMessageId, content;
   final DateTime createdAt;
@@ -38,12 +40,30 @@ class ChatMessage {
   final int? durationMs, audioSizeBytes;
   final double uploadProgress;
   final AttachmentMetadata? attachment;
+  final String? sendError;
+  final DateTime? localCreatedAt;
+  DateTime get displayTime => localCreatedAt ?? createdAt;
+  bool get isConfirmed =>
+      delivery == Delivery.sent ||
+      delivery == Delivery.delivered ||
+      delivery == Delivery.seen;
+  String get statusText => switch (delivery) {
+    Delivery.sending => 'Sending...',
+    Delivery.sent => 'Sent',
+    Delivery.delivered => 'Delivered',
+    Delivery.seen => 'Seen',
+    Delivery.failed => 'Error: ${sendError ?? 'Unable to send. Tap Retry.'}',
+  };
   bool get isAttachment => type == 'IMAGE' || type == 'FILE';
   bool get isVoice => type == 'VOICE';
   ChatMessage withDelivery(
     Delivery value, {
     String? fileId,
     double? progress,
+    String? error,
+    String? localPath,
+    AttachmentMetadata? attachment,
+    DateTime? localCreatedAt,
   }) => ChatMessage(
     id: id,
     senderId: senderId,
@@ -55,10 +75,12 @@ class ChatMessage {
     type: type,
     fileId: fileId ?? this.fileId,
     durationMs: durationMs,
-    attachment: attachment,
+    attachment: attachment ?? this.attachment,
     audioSizeBytes: audioSizeBytes,
-    localPath: localPath,
+    localPath: localPath ?? this.localPath,
     uploadProgress: progress ?? uploadProgress,
+    sendError: error,
+    localCreatedAt: localCreatedAt ?? this.localCreatedAt,
   );
   factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
     id: j['id'] as String,
@@ -74,6 +96,24 @@ class ChatMessage {
         : AttachmentMetadata.fromJson(j['attachment'] as Map<String, dynamic>),
     audioSizeBytes: j['audioSizeBytes'] as int?,
     createdAt: DateTime.parse(j['createdAt'] as String),
+  );
+}
+
+/// REST/history and socket echoes must not undo a confirmed status or local order.
+ChatMessage reconcileMessage(ChatMessage previous, ChatMessage incoming) {
+  if (previous.isConfirmed && !incoming.isConfirmed) return previous;
+  final status =
+      previous.isConfirmed &&
+          incoming.isConfirmed &&
+          previous.delivery.index > incoming.delivery.index
+      ? previous.delivery
+      : incoming.delivery;
+  return incoming.withDelivery(
+    status,
+    error: incoming.sendError,
+    localCreatedAt:
+        previous.localCreatedAt ??
+        (!previous.isConfirmed ? previous.createdAt : null),
   );
 }
 

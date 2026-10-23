@@ -10,6 +10,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../data/models/chat_models.dart';
 import '../../data/repositories/chat_repository.dart';
+import '../../data/repositories/outgoing_queue.dart';
 import '../../data/datasources/chat_api.dart';
 
 class ChatState {
@@ -29,16 +30,25 @@ class ChatState {
 class ChatCubit extends Cubit<ChatState> {
   ChatCubit(this.repository, this.conversation, this.senderId)
     : super(ChatState(roomId: conversation.roomId)) {
-    final drafts = repository.voiceDrafts[_draftKey];
-    if (drafts != null) {
-      emit(ChatState(roomId: conversation.roomId, messages: drafts));
-    }
+    final drafts = repository.outbox.messages(_draftKey);
+    emit(
+      ChatState(
+        roomId: conversation.roomId ?? repository.outbox.roomId(_draftKey),
+        messages: _merge(drafts),
+        sending: drafts.any((m) => m.delivery == Delivery.sending),
+      ),
+    );
+    _outgoing = repository.outbox.updates.listen((update) {
+      if (update.conversationKey != _draftKey) return;
+      _update(roomId: update.roomId, messages: _merge([update.message]));
+    });
     _events = repository.events.listen(_received);
     _connections = repository.connections.listen((connection) {
       if (connection == ChatConnection.connected) unawaited(synchronize());
     });
   }
   late final StreamSubscription<ChatEvent> _events;
+  late final StreamSubscription<OutgoingUpdate> _outgoing;
   late final StreamSubscription<ChatConnection> _connections;
   bool _syncing = false, _syncAgain = false;
   void _received(ChatEvent event) {
@@ -54,6 +64,7 @@ class ChatCubit extends Cubit<ChatState> {
   @override
   Future<void> close() async {
     await _events.cancel();
+    await _outgoing.cancel();
     await _connections.cancel();
     return super.close();
   }
@@ -61,35 +72,25 @@ class ChatCubit extends Cubit<ChatState> {
   final ChatRepository repository;
   final Conversation conversation;
   final String senderId;
-  String get _draftKey =>
-      '$senderId:${conversation.isGroup ? conversation.roomId : conversation.recipient?.id}';
+  String get _draftKey => OutgoingQueue.conversationKey(senderId, conversation);
   bool _loaded = false;
   void _update({
     String? roomId,
     List<ChatMessage>? messages,
     bool? loading,
-    bool? sending,
     String? cursor,
     bool setCursor = false,
     String? error,
   }) {
-    final pending = (messages ?? state.messages)
-        .where(
-          (m) => (m.isVoice || m.isAttachment) && m.delivery != Delivery.sent,
-        )
-        .toList();
-    if (pending.isEmpty) {
-      repository.voiceDrafts.remove(_draftKey);
-    } else {
-      repository.voiceDrafts[_draftKey] = pending;
-    }
     if (isClosed) return;
     emit(
       ChatState(
         roomId: roomId ?? state.roomId,
         messages: messages ?? state.messages,
         loading: loading ?? state.loading,
-        sending: sending ?? state.sending,
+        sending: (messages ?? state.messages).any(
+          (m) => m.delivery == Delivery.sending,
+        ),
         cursor: setCursor ? cursor : state.cursor,
         error: error,
       ),
@@ -98,18 +99,14 @@ class ChatCubit extends Cubit<ChatState> {
 
   List<ChatMessage> _merge(Iterable<ChatMessage> incoming) {
     final all = [...state.messages];
-    for (final m in incoming) {
+    for (var m in incoming) {
       final index = all.indexWhere(
         (old) =>
             old.id == m.id ||
             (old.senderId == m.senderId &&
                 old.clientMessageId == m.clientMessageId),
       );
-      if (index >= 0 &&
-          all[index].delivery == Delivery.sent &&
-          m.delivery != Delivery.sent) {
-        continue;
-      }
+      if (index >= 0) m = reconcileMessage(all[index], m);
       all.removeWhere(
         (old) =>
             old.id == m.id ||
@@ -119,7 +116,7 @@ class ChatCubit extends Cubit<ChatState> {
       all.add(m);
     }
     return all..sort((a, b) {
-      final c = b.createdAt.compareTo(a.createdAt);
+      final c = b.displayTime.compareTo(a.displayTime);
       return c != 0 ? c : b.id.compareTo(a.id);
     });
   }
@@ -138,6 +135,9 @@ class ChatCubit extends Cubit<ChatState> {
         cursor: refresh ? null : state.cursor,
       );
       _loaded = true;
+      for (final message in page.items) {
+        repository.outbox.confirm(message, state.roomId!);
+      }
       _update(
         messages: _merge(page.items),
         loading: false,
@@ -169,16 +169,21 @@ class ChatCubit extends Cubit<ChatState> {
         _update(roomId: found.roomId);
       }
       if (state.roomId == null) return;
-      final persisted = state.messages
-          .where((m) => m.delivery == Delivery.sent)
-          .toList();
-      final oldest = persisted.isEmpty ? null : persisted.last;
+      final persisted = state.messages.where((m) => m.isConfirmed).toList();
+      persisted.sort((a, b) {
+        final order = a.createdAt.compareTo(b.createdAt);
+        return order != 0 ? order : a.id.compareTo(b.id);
+      });
+      final oldest = persisted.firstOrNull;
       final hadHistory = _loaded;
       String? cursor;
       final seen = <String>{};
       do {
         final page = await repository.history(state.roomId!, cursor: cursor);
         if (isClosed) return;
+        for (final message in page.items) {
+          repository.outbox.confirm(message, state.roomId!);
+        }
         _update(messages: _merge(page.items));
         cursor = page.cursor;
         if (oldest != null &&
@@ -206,7 +211,7 @@ class ChatCubit extends Cubit<ChatState> {
   }
 
   Future<bool> send(String text) async {
-    if (state.sending || text.trim().isEmpty || text.length > 4000) {
+    if (isClosed || text.trim().isEmpty || text.length > 4000) {
       return false;
     }
     final key = const Uuid().v4();
@@ -223,7 +228,7 @@ class ChatCubit extends Cubit<ChatState> {
   }
 
   Future<bool> sendVoice(String path, int durationMs) async {
-    if (isClosed || state.sending) {
+    if (isClosed) {
       try {
         await File(path).delete();
       } catch (_) {}
@@ -245,8 +250,13 @@ class ChatCubit extends Cubit<ChatState> {
     return _transmit(message);
   }
 
-  Future<bool> sendAttachment(String path, AttachmentMetadata metadata) async {
-    if (isClosed || state.sending) return false;
+  Future<bool> sendAttachment(
+    String path,
+    AttachmentMetadata metadata, {
+    PrepareAttachment? prepare,
+    bool ownsFile = true,
+  }) async {
+    // The session queue also accepts files selected before navigation.
     final key = const Uuid().v4();
     final message = ChatMessage(
       id: key,
@@ -260,122 +270,24 @@ class ChatCubit extends Cubit<ChatState> {
       attachment: metadata,
     );
     _update(messages: _merge([message]));
-    return _transmit(message);
+    return _transmit(message, prepare: prepare, ownsFile: ownsFile);
   }
 
   Future<bool> retry(ChatMessage message) async {
-    if (state.sending || message.delivery != Delivery.failed) return false;
+    if (isClosed || message.delivery != Delivery.failed) return false;
     return _transmit(message);
   }
 
-  Future<bool> _transmit(ChatMessage message) async {
-    _update(
-      sending: true,
-      messages: _merge([message.withDelivery(Delivery.sending)]),
-    );
-    try {
-      if (message.isVoice && message.fileId == null) {
-        final file = File(message.localPath!);
-        final size = await file.length();
-        if (size <= 44 || size > 4000000) {
-          throw StateError('Invalid recording size');
-        }
-        final id = await repository.api.uploadVoice(file.path, (sent, total) {
-          if (!isClosed) {
-            _update(
-              messages: _merge([
-                message.withDelivery(
-                  Delivery.sending,
-                  progress: total > 0 ? sent / total : 0,
-                ),
-              ]),
-            );
-          }
-        });
-        message = message.withDelivery(
-          Delivery.sending,
-          fileId: id,
-          progress: 1,
-        );
-        _update(messages: _merge([message]));
-      }
-      if (message.isAttachment && message.fileId == null) {
-        final file = File(message.localPath!);
-        final policy = await repository.api.get('storage/files/policy');
-        final metadata = message.attachment!;
-        final extension = metadata.originalName.split('.').last.toLowerCase();
-        final size = await file.length();
-        if (size == 0 ||
-            size > (policy['maxSizeBytes'] as int) ||
-            !(policy['extensions'] as Map).containsKey(extension)) {
-          throw StateError(
-            'Unsupported file type or file exceeds the upload limit.',
-          );
-        }
-        final id = await repository.api.uploadAttachment(
-          file.path,
-          metadata.originalName,
-          metadata.contentType,
-          (sent, total) {
-            if (!isClosed) {
-              _update(
-                messages: _merge([
-                  message.withDelivery(
-                    Delivery.sending,
-                    progress: total > 0 ? (sent / total).clamp(0, 1) : 0,
-                  ),
-                ]),
-              );
-            }
-          },
-        );
-        message = message.withDelivery(
-          Delivery.sending,
-          fileId: id,
-          progress: 1,
-        );
-        _update(messages: _merge([message]));
-      }
-      final wasDraft = state.roomId == null;
-      final result = await repository.send(
-        roomId: state.roomId,
-        recipientId: conversation.recipient?.id ?? '',
-        key: message.clientMessageId,
-        content: message.content,
-        fileId: message.fileId,
-        durationMs: message.durationMs,
-        type: message.type,
-      );
-      _update(
-        roomId: result.room.id,
-        messages: _merge([result.message]),
-        sending: false,
-      );
-      if (message.localPath != null) {
-        try {
-          await File(message.localPath!).delete();
-        } catch (_) {}
-      }
-      if (wasDraft) await load(refresh: true);
-      return true;
-    } catch (e) {
-      final confirmed = state.messages.any(
-        (m) =>
-            m.senderId == message.senderId &&
-            m.clientMessageId == message.clientMessageId &&
-            m.delivery == Delivery.sent,
-      );
-      _update(
-        messages: _merge([message.withDelivery(Delivery.failed)]),
-        sending: false,
-        error: confirmed ? null : chatError(e),
-      );
-      if (confirmed && message.localPath != null) {
-        try {
-          await File(message.localPath!).delete();
-        } catch (_) {}
-      }
-      return confirmed;
-    }
-  }
+  Future<bool> _transmit(
+    ChatMessage message, {
+    PrepareAttachment? prepare,
+    bool ownsFile = true,
+  }) => repository.outbox.enqueue(
+    conversation.isGroup
+        ? conversation
+        : Conversation(conversation.recipient, roomId: state.roomId),
+    message,
+    prepare: prepare,
+    ownsFile: ownsFile,
+  );
 }

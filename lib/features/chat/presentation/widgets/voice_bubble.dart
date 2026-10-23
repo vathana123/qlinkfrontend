@@ -60,7 +60,8 @@ class VoiceBubble extends StatefulWidget {
   State<VoiceBubble> createState() => _VoiceBubbleState();
 }
 
-class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
+class _VoiceBubbleState extends State<VoiceBubble>
+    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   static _VoiceBubbleState? _active;
   late final _player = widget.createPlayer?.call() ?? AudioPlayer();
   CancelToken? _cancel;
@@ -69,6 +70,10 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
   bool _loading = false, _loaded = false;
   String? _error;
   int _generation = 0;
+  @override
+  bool get wantKeepAlive =>
+      _loading ||
+      (_player.playing && _player.processingState != ProcessingState.completed);
   @override
   void initState() {
     super.initState();
@@ -80,10 +85,14 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
           _loading = false;
           _error = 'Audio unavailable. Tap to retry.';
         });
+        updateKeepAlive();
       }
     });
     _subscription = _player.playerStateStream.listen((_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        updateKeepAlive();
+      }
     });
   }
 
@@ -92,7 +101,19 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
     _loaded = false;
     _cancel?.cancel();
     await _player.stop();
-    if (mounted) setState(() => _loading = false);
+    if (mounted) {
+      setState(() => _loading = false);
+      updateKeepAlive();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant VoiceBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.message.fileId != widget.message.fileId &&
+        (_loaded || _loading)) {
+      unawaited(_stop());
+    }
   }
 
   @override
@@ -114,6 +135,7 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
       _loading = true;
       _error = null;
     });
+    updateKeepAlive();
     try {
       if (!_loaded) {
         _cancel?.cancel();
@@ -125,6 +147,7 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
             _cancel!,
           ),
         );
+        if (!mounted || generation != _generation || _active != this) return;
         _loaded = true;
       }
       if (_player.processingState == ProcessingState.completed) {
@@ -134,12 +157,13 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
       setState(() => _loading = false);
       await _player.play();
     } catch (_) {
-      _loaded = false;
       if (mounted && generation == _generation) {
         setState(() {
+          _loaded = false;
           _loading = false;
           _error = 'Audio unavailable. Tap to retry.';
         });
+        updateKeepAlive();
       }
     }
   }
@@ -158,6 +182,7 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final m = widget.message;
     final seconds = ((m.durationMs ?? 0) / 1000).ceil();
     return SizedBox(
@@ -171,9 +196,7 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
                 tooltip: _player.playing
                     ? 'Pause voice message'
                     : 'Play voice message',
-                onPressed: m.delivery != Delivery.sent || _loading
-                    ? null
-                    : _toggle,
+                onPressed: !m.isConfirmed || _loading ? null : _toggle,
                 icon: _loading
                     ? const SizedBox(
                         width: 20,
@@ -182,30 +205,24 @@ class _VoiceBubbleState extends State<VoiceBubble> with WidgetsBindingObserver {
                       )
                     : Icon(_player.playing ? Icons.pause : Icons.play_arrow),
               ),
-              Expanded(
-                child: StreamBuilder<Duration>(
-                  stream: _player.positionStream,
-                  builder: (context, snapshot) => LinearProgressIndicator(
-                    value: m.delivery == Delivery.sending
-                        ? m.uploadProgress
-                        : ((snapshot.data?.inMilliseconds ?? 0) /
+              if (m.isConfirmed)
+                Expanded(
+                  child: StreamBuilder<Duration>(
+                    stream: _player.positionStream,
+                    builder: (context, snapshot) => LinearProgressIndicator(
+                      value:
+                          ((snapshot.data?.inMilliseconds ?? 0) /
                                   (m.durationMs ?? 1))
                               .clamp(0.0, 1.0),
+                    ),
                   ),
                 ),
-              ),
               const SizedBox(width: 8),
               Text(
                 '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}',
               ),
             ],
           ),
-          if (m.delivery == Delivery.sending)
-            Text(
-              m.uploadProgress < 1
-                  ? 'Uploading ${(m.uploadProgress * 100).round()}%'
-                  : 'Sending…',
-            ),
           if (_error != null)
             Text(
               _error!,

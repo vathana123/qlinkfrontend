@@ -19,6 +19,36 @@ class PreparedAttachment {
 class AttachmentPicker {
   AttachmentPicker({this.temporaryDirectory = getTemporaryDirectory});
   final Future<Directory> Function() temporaryDirectory;
+
+  /// Enough local metadata to show a message before requesting upload policy.
+  Future<AttachmentMetadata> describe(XFile file) async {
+    const types = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'pdf': 'application/pdf',
+      'txt': 'text/plain',
+      'csv': 'text/csv',
+      'json': 'application/json',
+      'doc': 'application/msword',
+      'xls': 'application/vnd.ms-excel',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'xlsx':
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
+    return AttachmentMetadata(
+      file.name,
+      types[file.name.split('.').last.toLowerCase()] ??
+          file.mimeType ??
+          'application/octet-stream',
+      await file.length(),
+    );
+  }
+
   Future<List<XFile>> pick(AttachmentSource source) async {
     if (source == AttachmentSource.photo) {
       // Native gallery supplies multi-selection indicators and confirmation.
