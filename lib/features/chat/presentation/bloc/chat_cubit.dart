@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../data/realtime/chat_event.dart';
@@ -16,6 +18,8 @@ import '../../data/datasources/chat_api.dart';
 class ChatState {
   const ChatState({
     this.roomId,
+    this.group,
+    this.removed = false,
     this.messages = const [],
     this.loading = false,
     this.sending = false,
@@ -23,17 +27,23 @@ class ChatState {
     this.error,
   });
   final String? roomId, cursor, error;
+  final ChatRoom? group;
+  final bool removed;
+  bool get canSend => !removed && (group?.canSend ?? true);
   final List<ChatMessage> messages;
   final bool loading, sending;
 }
 
 class ChatCubit extends Cubit<ChatState> {
   ChatCubit(this.repository, this.conversation, this.senderId)
-    : super(ChatState(roomId: conversation.roomId)) {
+    : super(
+        ChatState(roomId: conversation.roomId, group: conversation.groupRoom),
+      ) {
     final drafts = repository.outbox.messages(_draftKey);
     emit(
       ChatState(
         roomId: conversation.roomId ?? repository.outbox.roomId(_draftKey),
+        group: conversation.groupRoom,
         messages: _merge(drafts),
         sending: drafts.any((m) => m.delivery == Delivery.sending),
       ),
@@ -42,6 +52,16 @@ class ChatCubit extends Cubit<ChatState> {
       if (update.conversationKey != _draftKey) return;
       _update(roomId: update.roomId, messages: _merge([update.message]));
     });
+    _revokedRooms = repository.outbox.revokedRooms.listen((roomId) {
+      if (conversation.isGroup && roomId == state.roomId) {
+        _accessGeneration++;
+        _update(
+          removed: true,
+          messages: [],
+          error: 'You no longer have access to this group.',
+        );
+      }
+    });
     _events = repository.events.listen(_received);
     _connections = repository.connections.listen((connection) {
       if (connection == ChatConnection.connected) unawaited(synchronize());
@@ -49,6 +69,7 @@ class ChatCubit extends Cubit<ChatState> {
   }
   late final StreamSubscription<ChatEvent> _events;
   late final StreamSubscription<OutgoingUpdate> _outgoing;
+  late final StreamSubscription<String> _revokedRooms;
   late final StreamSubscription<ChatConnection> _connections;
   bool _syncing = false, _syncAgain = false;
   void _received(ChatEvent event) {
@@ -57,7 +78,24 @@ class ChatCubit extends Cubit<ChatState> {
         event.roomType == 'PERSONAL' &&
         event.room?.participant?.id == conversation.recipient?.id;
     if (event.roomId != state.roomId && !draftMatch) return;
-    _update(roomId: event.roomId, messages: _merge([event.message]));
+    if (event.type == 'GROUP_REMOVED') {
+      repository.outbox.revokeRoom(event.roomId);
+      _accessGeneration++;
+      _update(
+        removed: true,
+        messages: [],
+        error: 'You no longer have access to this group.',
+      );
+      return;
+    }
+    if (event.type == 'GROUP_UPDATED') {
+      _accessGeneration++;
+      _update(group: event.room, removed: false);
+      unawaited(synchronize());
+      return;
+    }
+    if (state.removed) return;
+    _update(roomId: event.roomId, messages: _merge([event.message!]));
     if (draftMatch) unawaited(synchronize());
   }
 
@@ -65,6 +103,7 @@ class ChatCubit extends Cubit<ChatState> {
   Future<void> close() async {
     await _events.cancel();
     await _outgoing.cancel();
+    await _revokedRooms.cancel();
     await _connections.cancel();
     return super.close();
   }
@@ -74,8 +113,23 @@ class ChatCubit extends Cubit<ChatState> {
   final String senderId;
   String get _draftKey => OutgoingQueue.conversationKey(senderId, conversation);
   bool _loaded = false;
+  int _accessGeneration = 0;
+  void _failure(Object e) {
+    if (conversation.isGroup &&
+        e is DioException &&
+        [403, 404].contains(e.response?.statusCode)) {
+      if (state.roomId != null) repository.outbox.revokeRoom(state.roomId!);
+      _accessGeneration++;
+      _update(removed: true, messages: [], loading: false, error: chatError(e));
+    } else {
+      _update(loading: false, error: chatError(e));
+    }
+  }
+
   void _update({
     String? roomId,
+    ChatRoom? group,
+    bool? removed,
     List<ChatMessage>? messages,
     bool? loading,
     String? cursor,
@@ -86,6 +140,8 @@ class ChatCubit extends Cubit<ChatState> {
     emit(
       ChatState(
         roomId: roomId ?? state.roomId,
+        group: group ?? state.group,
+        removed: removed ?? state.removed,
         messages: messages ?? state.messages,
         loading: loading ?? state.loading,
         sending: (messages ?? state.messages).any(
@@ -129,11 +185,16 @@ class ChatCubit extends Cubit<ChatState> {
       return;
     }
     _update(loading: true);
+    final generation = _accessGeneration;
     try {
       final page = await repository.history(
         state.roomId!,
         cursor: refresh ? null : state.cursor,
       );
+      if (generation != _accessGeneration || state.removed) {
+        _update(loading: false);
+        return;
+      }
       _loaded = true;
       for (final message in page.items) {
         repository.outbox.confirm(message, state.roomId!);
@@ -145,7 +206,7 @@ class ChatCubit extends Cubit<ChatState> {
         setCursor: true,
       );
     } catch (e) {
-      _update(loading: false, error: chatError(e));
+      _failure(e);
     } finally {
       if (_syncAgain && !isClosed) {
         _syncAgain = false;
@@ -169,6 +230,12 @@ class ChatCubit extends Cubit<ChatState> {
         _update(roomId: found.roomId);
       }
       if (state.roomId == null) return;
+      final generation = _accessGeneration;
+      if (conversation.isGroup) {
+        final group = await repository.group(state.roomId!);
+        if (generation != _accessGeneration || isClosed) return;
+        _update(group: group, removed: false);
+      }
       final persisted = state.messages.where((m) => m.isConfirmed).toList();
       persisted.sort((a, b) {
         final order = a.createdAt.compareTo(b.createdAt);
@@ -180,7 +247,9 @@ class ChatCubit extends Cubit<ChatState> {
       final seen = <String>{};
       do {
         final page = await repository.history(state.roomId!, cursor: cursor);
-        if (isClosed) return;
+        if (isClosed || generation != _accessGeneration || state.removed) {
+          return;
+        }
         for (final message in page.items) {
           repository.outbox.confirm(message, state.roomId!);
         }
@@ -200,7 +269,7 @@ class ChatCubit extends Cubit<ChatState> {
       // Keep the user's older-history cursor when catching up at the head.
       if (!hadHistory) _update(cursor: cursor, setCursor: true);
     } catch (e) {
-      _update(error: chatError(e));
+      _failure(e);
     } finally {
       _syncing = false;
       if (_syncAgain && !isClosed) {
@@ -211,7 +280,10 @@ class ChatCubit extends Cubit<ChatState> {
   }
 
   Future<bool> send(String text) async {
-    if (isClosed || text.trim().isEmpty || text.length > 4000) {
+    if (isClosed ||
+        !state.canSend ||
+        text.trim().isEmpty ||
+        text.length > 4000) {
       return false;
     }
     final key = const Uuid().v4();
@@ -228,7 +300,7 @@ class ChatCubit extends Cubit<ChatState> {
   }
 
   Future<bool> sendVoice(String path, int durationMs) async {
-    if (isClosed) {
+    if (isClosed || !state.canSend) {
       try {
         await File(path).delete();
       } catch (_) {}
@@ -256,6 +328,14 @@ class ChatCubit extends Cubit<ChatState> {
     PrepareAttachment? prepare,
     bool ownsFile = true,
   }) async {
+    if (!state.canSend) {
+      if (ownsFile) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
+      return false;
+    }
     // The session queue also accepts files selected before navigation.
     final key = const Uuid().v4();
     final message = ChatMessage(
@@ -274,7 +354,9 @@ class ChatCubit extends Cubit<ChatState> {
   }
 
   Future<bool> retry(ChatMessage message) async {
-    if (isClosed || message.delivery != Delivery.failed) return false;
+    if (isClosed || !state.canSend || message.delivery != Delivery.failed) {
+      return false;
+    }
     return _transmit(message);
   }
 

@@ -150,7 +150,7 @@ A protected 401 joins a shared refresh future, preventing concurrent rotation of
 
 Tokens are stored together as one JSON secure-storage entry (`qlink.session.v1`), avoiding partial pair writes. They never enter SharedPreferences, UI state or logs. No HTTP logging interceptor is installed. Corrupt sessions are deleted. A startup `/me` connection failure does not grant Home access or automatically erase otherwise valid credentials; reopening the app retries restoration.
 
-Sign-out calls the backend first, then deletes local credentials. If remote revocation cannot be confirmed, the UI explicitly reports local-only sign-out. If local secure deletion fails, the UI reports failure rather than claiming deletion succeeded. Per the backend contract, access JWTs remain valid until expiry even after successful refresh-session revocation.
+Sign-out calls the backend first, then deletes local credentials. If remote revocation cannot be confirmed, the UI explicitly reports local-only sign-out. If local secure deletion fails, the UI reports failure rather than claiming deletion succeeded. Since Phase 4.1A, successful session revocation also rejects previously issued access JWTs on subsequent protected REST and WebSocket operations; other device sessions remain active.
 
 ## BLoC, navigation and theme
 
@@ -256,3 +256,9 @@ Filter Android logs to `com.example.qlinkfrontend` when validating qLink; logs f
 - [Secure storage setup](https://pub.dev/packages/flutter_secure_storage)
 
 Installed package READMEs/source APIs were also inspected for the exact resolved versions.
+
+## Phase 4.1A authentication reliability
+
+Refresh HTTP 401 is terminal and follows the existing session-expired flow. Network errors, timeouts, server errors, and unrecognized failures preserve credentials and the running session's in-memory outgoing jobs. A recoverable message asks the user to retry; there is no automatic HTTP retry loop. Concurrent callers share one refresh, and new protected requests wait for it before sending. A later attempt may refresh successfully.
+
+Explicit logout still clears session state. Pending messages are not persisted across application restart; durable outbox storage remains Phase 4.3A work. If the server rotated a refresh token but its response was lost, a later reuse can still trigger the backend's intentional replay protection and require sign-in.

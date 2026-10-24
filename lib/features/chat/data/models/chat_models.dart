@@ -126,17 +126,30 @@ class ChatRoom {
     this.type = 'PERSONAL',
     this.name,
     this.memberCount,
+    this.groupAvatarUrl,
+    this.description,
+    this.myRole,
+    this.membersCanSend = true,
+    this.membersCanInvite = false,
+    this.messageHistoryVisibility = 'VIEW_ALL_MESSAGES',
   });
   final String id;
   final PublicUser? participant;
   final String type;
   final String? name;
   final int? memberCount;
+  final String? groupAvatarUrl, description, myRole;
+  final bool membersCanSend, membersCanInvite;
+  final String messageHistoryVisibility;
+  bool get isOwner => myRole == 'OWNER';
+  bool get canManage => isOwner || myRole == 'CO_OWNER';
+  bool get canInvite => canManage || membersCanInvite;
+  bool get canSend => !isGroup || canManage || membersCanSend;
   bool get isGroup => type != 'PERSONAL';
   String get title => isGroup
       ? name ?? 'Group'
       : participant?.displayName ?? 'Unavailable user';
-  String? get avatarUrl => isGroup ? null : participant?.avatarUrl;
+  String? get avatarUrl => isGroup ? groupAvatarUrl : participant?.avatarUrl;
   final ChatMessage? lastMessage;
   final DateTime? lastMessageAt;
   ChatRoom withMessage(ChatMessage message) => ChatRoom(
@@ -145,6 +158,12 @@ class ChatRoom {
     type: type,
     name: name,
     memberCount: memberCount,
+    groupAvatarUrl: groupAvatarUrl,
+    description: description,
+    myRole: myRole,
+    membersCanSend: membersCanSend,
+    membersCanInvite: membersCanInvite,
+    messageHistoryVisibility: messageHistoryVisibility,
     lastMessage: message,
     lastMessageAt: message.createdAt,
   );
@@ -156,6 +175,13 @@ class ChatRoom {
     type: j['type'] as String? ?? 'PERSONAL',
     name: j['name'] as String?,
     memberCount: j['memberCount'] as int?,
+    groupAvatarUrl: j['avatarUrl'] as String?,
+    description: j['description'] as String?,
+    myRole: j['myRole'] as String?,
+    membersCanSend: j['membersCanSend'] as bool? ?? true,
+    membersCanInvite: j['membersCanInvite'] as bool? ?? false,
+    messageHistoryVisibility:
+        j['messageHistoryVisibility'] as String? ?? 'VIEW_ALL_MESSAGES',
     lastMessage: j['lastMessage'] == null
         ? null
         : ChatMessage.fromJson(j['lastMessage'] as Map<String, dynamic>),
@@ -169,19 +195,23 @@ class Conversation {
     this.roomId,
     this.groupName,
     this.memberCount,
+    this.groupRoom,
   });
   factory Conversation.fromRoom(ChatRoom room) => Conversation(
     room.participant,
     roomId: room.id,
     groupName: room.isGroup ? room.title : null,
     memberCount: room.memberCount,
+    groupRoom: room.isGroup ? room : null,
   );
   final PublicUser? recipient;
+  final ChatRoom? groupRoom;
   final String? groupName;
   final int? memberCount;
   bool get isGroup => groupName != null;
   String get title => groupName ?? recipient?.displayName ?? 'Unavailable user';
-  String? get avatarUrl => isGroup ? null : recipient?.avatarUrl;
+  String? get avatarUrl =>
+      isGroup ? groupRoom?.avatarUrl : recipient?.avatarUrl;
   final String? roomId;
 }
 

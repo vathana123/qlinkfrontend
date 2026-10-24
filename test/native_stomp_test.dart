@@ -62,7 +62,7 @@ void main() {
           'application-access-token',
     );
     final events = realtime.events.listen((event) {
-      expect(event.message.content, 'Hello');
+      expect(event.message!.content, 'Hello');
       if (!gotEvent.isCompleted) gotEvent.complete();
     });
     final states = realtime.states.listen((state) {

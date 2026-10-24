@@ -28,6 +28,11 @@ Map<String, dynamic> group() => {
   'name': 'Friends',
   'participant': null,
   'memberCount': 3,
+  'myRole': 'OWNER',
+  'membersCanSend': true,
+  'membersCanInvite': false,
+  'messageHistoryVisibility': 'VIEW_AFTER_JOIN',
+  'description': 'A small group',
   'lastMessage': null,
   'lastMessageAt': null,
 };
@@ -189,6 +194,17 @@ void main() {
             created = true;
             return response(envelope(group()));
           }
+          if (r.path == '/api/v1/chat/groups/group-1/members') {
+            return response(
+              envelope([
+                {'id': 'user-1', 'displayName': 'User', 'role': 'OWNER'},
+                {'id': 'bob', 'displayName': 'Bob', 'role': 'MEMBER'},
+              ]),
+            );
+          }
+          if (r.path == '/api/v1/chat/groups/group-1') {
+            return response(envelope(group()));
+          }
           if (r.method == 'POST') {
             return response(
               envelope({
@@ -277,6 +293,19 @@ void main() {
         expect(
           adapter.requests.last.path,
           '/api/v1/chat/rooms/group-1/messages',
+        );
+        await tester.tap(find.text('Friends').first);
+        await tester.pumpAndSettle();
+        expect(find.text('Group info'), findsOneWidget);
+        expect(find.text('Member permissions'), findsOneWidget);
+        expect(find.text('A small group'), findsOneWidget);
+        expect(find.text('Owner'), findsOneWidget);
+        expect(find.text('Member'), findsOneWidget);
+        expect(
+          adapter.requests.any(
+            (r) => r.path == '/api/v1/chat/groups/group-1/members',
+          ),
+          isTrue,
         );
         await tester.pageBack();
         await tester.pumpAndSettle();

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 
 import '../../../../core/network/api_endpoints.dart';
+import '../../../../core/error/app_exception.dart';
 
 class ChatApi {
   ChatApi(this.dio);
@@ -82,6 +83,9 @@ class ChatApi {
 
 String chatError(Object error) {
   if (error is DioException) {
+    if (error.error is AppException) {
+      return (error.error! as AppException).message;
+    }
     final data = error.response?.data;
     final status = error.response?.statusCode;
     // Only short, user-facing client-error responses; never expose server traces.

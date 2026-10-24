@@ -44,14 +44,20 @@ class _SendJob {
 /// a slow upload cannot hold up text, and navigation does not cancel a send.
 class OutgoingQueue {
   OutgoingQueue(this.repository) {
-    _events = repository.events.listen(
-      (event) => confirm(event.message, event.roomId),
-    );
+    _events = repository.events.listen((event) {
+      if (event.type == 'GROUP_REMOVED') {
+        revokeRoom(event.roomId);
+      } else if (event.message != null) {
+        confirm(event.message!, event.roomId);
+      }
+    });
   }
   final ChatRepository repository;
   late final StreamSubscription<ChatEvent> _events;
   final _updates = StreamController<OutgoingUpdate>.broadcast(sync: true);
+  final _revokedRooms = StreamController<String>.broadcast(sync: true);
   Stream<OutgoingUpdate> get updates => _updates.stream;
+  Stream<String> get revokedRooms => _revokedRooms.stream;
   final _jobs = <String, _SendJob>{};
   final _running = <_SendJob>{};
   bool _bound = false, _disposed = false;
@@ -83,6 +89,16 @@ class OutgoingQueue {
       .where((job) => job.conversationKey == key && job.roomId != null)
       .map((job) => job.roomId)
       .firstOrNull;
+
+  void revokeRoom(String roomId) {
+    _revokedRooms.add(roomId);
+    for (final job in _jobs.values.where((j) => j.roomId == roomId).toList()) {
+      job.cancel.cancel('Group access removed');
+      if (!job.done.isCompleted) job.done.complete(false);
+      if (job.ownsFile) unawaited(_delete(job.ownedPath));
+      _jobs.remove(_id(job.message));
+    }
+  }
 
   Future<bool> enqueue(
     Conversation conversation,
@@ -272,8 +288,12 @@ class OutgoingQueue {
       successful = true;
     } catch (error) {
       if (_current(job)) {
-        successful = job.message.isConfirmed;
-        if (!successful) {
+        if (job.roomId != null && _roomAccessDenied(error)) {
+          revokeRoom(job.roomId!);
+        } else {
+          successful = job.message.isConfirmed;
+        }
+        if (!successful && _current(job)) {
           job.message = job.message.withDelivery(
             Delivery.failed,
             error: chatError(error),
@@ -306,10 +326,22 @@ class OutgoingQueue {
     } catch (_) {}
   }
 
+  bool _roomAccessDenied(Object error) {
+    if (error is! DioException) return false;
+    final status = error.response?.statusCode;
+    if (status == 404) return true;
+    final body = error.response?.data;
+    final details = body is Map ? body['data'] : null;
+    return status == 403 &&
+        details is Map &&
+        details['code'] == 'ROOM_ACCESS_DENIED';
+  }
+
   Future<void> dispose() async {
     setAccount(null);
     _disposed = true;
     await _events.cancel();
     await _updates.close();
+    await _revokedRooms.close();
   }
 }

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:go_router/go_router.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -69,13 +71,42 @@ class _ChatViewState extends State<_ChatView> {
   Widget build(BuildContext context) {
     final conversation = widget.conversation;
     final colors = Theme.of(context).colorScheme;
+    final chat = context.watch<ChatCubit>().state;
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: BlurAppBar(
-        title: conversation.title,
+        title: chat.group?.title ?? conversation.title,
+        titleWidget: conversation.isGroup
+            ? InkWell(
+                onTap: chat.removed
+                    ? null
+                    : () async {
+                        await context.push('/groups/${conversation.roomId}');
+                        if (context.mounted) {
+                          unawaited(context.read<ChatCubit>().synchronize());
+                        }
+                      },
+                child: Row(
+                  children: [
+                    UserAvatar(
+                      name: chat.group?.title ?? conversation.title,
+                      url: chat.group?.avatarUrl ?? conversation.avatarUrl,
+                      radius: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        chat.group?.title ?? conversation.title,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const Icon(Icons.info_outline),
+                  ],
+                ),
+              )
+            : null,
         actions: [
-          if (conversation.isGroup)
-            const CircleAvatar(radius: 18, child: Icon(Icons.group_outlined))
-          else
+          if (!conversation.isGroup)
             UserAvatar(
               name: conversation.title,
               url: conversation.avatarUrl,
@@ -117,7 +148,9 @@ class _ChatViewState extends State<_ChatView> {
                 if (conversation.isGroup && conversation.memberCount != null)
                   Padding(
                     padding: const EdgeInsets.all(8),
-                    child: Text('${conversation.memberCount} members'),
+                    child: Text(
+                      '${state.group?.memberCount ?? conversation.memberCount} members',
+                    ),
                   ),
                 if (state.error != null)
                   Padding(
@@ -140,7 +173,15 @@ class _ChatViewState extends State<_ChatView> {
                       : ListView.builder(
                           controller: _scroll,
                           reverse: true,
-                          padding: const EdgeInsets.all(12),
+                          padding: EdgeInsets.only(
+                            top:
+                                MediaQuery.paddingOf(context).top +
+                                kToolbarHeight +
+                                16,
+                            bottom: MediaQuery.paddingOf(context).bottom + 24,
+                            left: 12,
+                            right: 12,
+                          ),
                           itemCount: state.messages.length + 1,
                           findChildIndexCallback: (key) => indices[key],
                           itemBuilder: (context, index) {
@@ -233,12 +274,19 @@ class _ChatViewState extends State<_ChatView> {
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-                  child: VoiceInput(
-                    controller: _text,
-                    onSend: _send,
-                    busy: false,
-                    attachmentButton: const AttachmentButton(busy: false),
-                  ),
+                  child: !state.canSend
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: Text(
+                            'Messaging is unavailable for you in this group.',
+                          ),
+                        )
+                      : VoiceInput(
+                          controller: _text,
+                          onSend: _send,
+                          busy: false,
+                          attachmentButton: const AttachmentButton(busy: false),
+                        ),
                 ),
               ],
             );

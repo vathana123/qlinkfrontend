@@ -35,7 +35,6 @@ class _RoomsViewState extends State<_RoomsView> {
   @override
   Widget build(BuildContext context) => Scaffold(
     extendBodyBehindAppBar: true,
-    backgroundColor: Theme.of(context).colorScheme.surface.withValues(alpha: 0),
     appBar: BlurAppBar(
       titleWidget: BlocBuilder<AuthBloc, AuthState>(
         builder: (context, state) {

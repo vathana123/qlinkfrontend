@@ -3,6 +3,11 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:qlinkfrontend/core/network/dio_client.dart';
+import 'package:qlinkfrontend/core/network/api_endpoints.dart';
+import 'package:qlinkfrontend/core/storage/token_storage.dart';
+import 'package:qlinkfrontend/features/auth/data/repositories/auth_repository.dart';
+import 'package:qlinkfrontend/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:qlinkfrontend/features/chat/data/datasources/chat_api.dart';
 import 'package:qlinkfrontend/features/chat/data/models/chat_models.dart';
 import 'package:qlinkfrontend/features/chat/data/realtime/chat_event.dart';
@@ -48,6 +53,81 @@ ResponseBody accepted(RequestOptions request) {
 Future<void> flush() => Future<void>.delayed(const Duration(milliseconds: 10));
 
 void main() {
+  test('transient refresh retains authenticated outbox and owned attachment until retry', () async {
+    final storage = MemoryTokens()
+      ..tokens = const TokenPair('old-access', 'old-refresh');
+    final client = DioClient(storage);
+    var recover = false;
+    client.dio.httpClientAdapter = FakeAdapter((request) {
+      if (request.path == ApiEndpoints.me) {
+        return response(envelope({...userJson, 'id': 'me'}));
+      }
+      if (request.path == ApiEndpoints.refresh) {
+        return recover
+            ? response(envelope(sessionJson()))
+            : response({}, status: 503);
+      }
+      if (request.headers['Authorization'] != 'Bearer new-access') {
+        return response({}, status: 401);
+      }
+      return accepted(request);
+    });
+    final auth = AuthBloc(AuthRepository(client.dio, storage, FakeOAuth()));
+    client.auth.onSessionExpired = () => auth.add(const AuthSessionExpired());
+    final repository = ChatRepository(ChatApi(client.dio));
+    final session = auth.stream.listen(
+      (state) => repository.setAccount(state.user?.id),
+    );
+    final ready = auth.stream.firstWhere((state) => state is AuthAuthenticated);
+    auth.add(const AuthStarted());
+    await ready;
+    final folder = await Directory.systemTemp.createTemp(
+      'qlink-refresh-outbox-',
+    );
+    final file = await File('${folder.path}/pending.txt')
+        .writeAsString('hello');
+    final chat = ChatCubit(repository, conversation, 'me');
+    final media = ChatMessage(
+      id: 'media',
+      clientMessageId: 'media',
+      senderId: 'me',
+      content: '',
+      createdAt: DateTime.now().toUtc(),
+      delivery: Delivery.sending,
+      type: 'FILE',
+      fileId: 'already-uploaded',
+      localPath: file.path,
+      attachment: const AttachmentMetadata('pending.txt', 'text/plain', 5),
+    );
+    expect(await chat.send('pending text'), isFalse);
+    expect(await repository.outbox.enqueue(conversation, media), isFalse);
+    expect(auth.state, isA<AuthAuthenticated>());
+    expect(storage.tokens?.refreshToken, 'old-refresh');
+    expect(await file.exists(), isTrue);
+    expect(chat.state.messages, hasLength(2));
+    expect(
+      chat.state.messages.every((m) => m.delivery == Delivery.failed),
+      isTrue,
+    );
+    expect(
+      chat.state.messages.first.sendError,
+      contains('temporarily unavailable'),
+    );
+    final keys = chat.state.messages.map((m) => m.clientMessageId).toSet();
+    recover = true;
+    for (final message in chat.state.messages.toList()) {
+      expect(await chat.retry(message), isTrue);
+    }
+    expect(chat.state.messages.map((m) => m.clientMessageId).toSet(), keys);
+    expect(chat.state.messages.every((m) => m.isConfirmed), isTrue);
+    expect(await file.exists(), isFalse);
+    await chat.close();
+    await session.cancel();
+    await repository.dispose();
+    await auth.close();
+    await folder.delete(recursive: true);
+  });
+
   test('rapid sends are optimistic, ordered and survive navigation', () async {
     final first = Completer<ResponseBody>();
     final adapter = FakeAdapter(
