@@ -40,18 +40,33 @@ class RoomsCubit extends Cubit<RoomsState> {
     return time != 0 ? time : b.id.compareTo(a.id);
   }
 
-  List<ChatRoom> _merge(Iterable<ChatRoom> incoming, {bool replace = false}) {
+  final _hiddenIds = <String>{};
+  List<ChatRoom> _merge(
+    Iterable<ChatRoom> incoming, {
+    bool replace = false,
+    bool authoritative = false,
+  }) {
     final all = {for (final room in state.items) room.id: room};
     for (var room in incoming) {
       final old = all[room.id];
-      if (old?.lastMessage != null &&
+      if (!authoritative &&
+          old?.lastMessage != null &&
+          !_hiddenIds.contains(old!.lastMessage!.id) &&
           (room.lastMessage == null ||
-              old!.lastMessage!.createdAt.isAfter(
-                room.lastMessage!.createdAt,
-              ) ||
+              old.lastMessage!.createdAt.isAfter(room.lastMessage!.createdAt) ||
               (old.lastMessage!.createdAt == room.lastMessage!.createdAt &&
                   old.lastMessage!.id.compareTo(room.lastMessage!.id) > 0))) {
-        room = room.withMessage(old!.lastMessage!);
+        room = room.withMessage(old.lastMessage!);
+      }
+      if (room.lastMessage != null &&
+          _hiddenIds.contains(room.lastMessage!.id)) {
+        continue;
+      }
+      if (old?.lastMessage?.id == room.lastMessage?.id &&
+          old?.lastMessage != null) {
+        room = room.withMessage(
+          reconcileMessage(old!.lastMessage!, room.lastMessage!),
+        );
       }
       all[room.id] = room;
     }
@@ -81,6 +96,15 @@ class RoomsCubit extends Cubit<RoomsState> {
             hasMore: state.hasMore,
           ),
         );
+      }
+      return;
+    }
+    if (event.message?.hidden == true) _hiddenIds.add(event.message!.id);
+    if (event.message?.hidden == true ||
+        event.type == 'MESSAGE_UPDATED' ||
+        event.type == 'MESSAGE_HIDDEN') {
+      if (event.room != null) {
+        emit(RoomsState(items: _merge([event.room!]), hasMore: state.hasMore));
       }
       return;
     }
@@ -163,7 +187,7 @@ class RoomsCubit extends Cubit<RoomsState> {
       _page = fetched;
       emit(
         RoomsState(
-          items: _merge(fetchedRooms, replace: true),
+          items: _merge(fetchedRooms, replace: true, authoritative: true),
           hasMore: result?.hasMore ?? false,
         ),
       );
