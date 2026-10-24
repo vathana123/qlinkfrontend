@@ -12,6 +12,37 @@ class PublicUser {
 
 enum Delivery { sending, sent, delivered, seen, failed }
 
+class ReplyPreview {
+  const ReplyPreview(
+    this.id,
+    this.content, {
+    this.senderDisplayName,
+    this.type,
+    this.unavailable = false,
+  });
+  final String id, content;
+  final String? senderDisplayName, type;
+  final bool unavailable;
+  factory ReplyPreview.fromJson(Map<String, dynamic> j) => ReplyPreview(
+    j['id'] as String,
+    j['content'] as String? ?? 'Message unavailable',
+    senderDisplayName: j['senderDisplayName'] as String?,
+    type: j['type'] as String?,
+    unavailable: j['unavailable'] == true,
+  );
+  factory ReplyPreview.fromMessage(ChatMessage m) => ReplyPreview(
+    m.id,
+    m.deleted || m.hidden
+        ? 'Message unavailable'
+        : m.type == 'TEXT'
+        ? m.content
+        : m.type,
+    senderDisplayName: m.deleted || m.hidden ? null : m.senderDisplayName,
+    type: m.type,
+    unavailable: m.deleted || m.hidden,
+  );
+}
+
 class ChatMessage {
   const ChatMessage({
     required this.id,
@@ -30,7 +61,20 @@ class ChatMessage {
     this.uploadProgress = 0,
     this.sendError,
     this.localCreatedAt,
+    this.replyToId,
+    this.reply,
+    this.editedAt,
+    this.removedAt,
+    this.revision = 0,
+    this.hidden = false,
+    this.canDeleteForEveryone = false,
   });
+  final String? replyToId;
+  final ReplyPreview? reply;
+  final DateTime? editedAt, removedAt;
+  final int revision;
+  final bool hidden, canDeleteForEveryone;
+  bool get deleted => removedAt != null;
   final String id, senderId, clientMessageId, content;
   final DateTime createdAt;
   final Delivery delivery;
@@ -54,8 +98,8 @@ class ChatMessage {
     Delivery.seen => 'Seen',
     Delivery.failed => 'Error: ${sendError ?? 'Unable to send. Tap Retry.'}',
   };
-  bool get isAttachment => type == 'IMAGE' || type == 'FILE';
-  bool get isVoice => type == 'VOICE';
+  bool get isAttachment => !deleted && (type == 'IMAGE' || type == 'FILE');
+  bool get isVoice => !deleted && type == 'VOICE';
   ChatMessage withDelivery(
     Delivery value, {
     String? fileId,
@@ -64,7 +108,15 @@ class ChatMessage {
     String? localPath,
     AttachmentMetadata? attachment,
     DateTime? localCreatedAt,
+    ReplyPreview? reply,
   }) => ChatMessage(
+    replyToId: replyToId,
+    reply: reply ?? this.reply,
+    editedAt: editedAt,
+    removedAt: removedAt,
+    revision: revision,
+    hidden: hidden,
+    canDeleteForEveryone: canDeleteForEveryone,
     id: id,
     senderId: senderId,
     clientMessageId: clientMessageId,
@@ -83,6 +135,15 @@ class ChatMessage {
     localCreatedAt: localCreatedAt ?? this.localCreatedAt,
   );
   factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
+    replyToId: j['replyToId'] as String?,
+    reply: j['reply'] == null
+        ? null
+        : ReplyPreview.fromJson(Map<String, dynamic>.from(j['reply'] as Map)),
+    editedAt: DateTime.tryParse(j['editedAt'] as String? ?? ''),
+    removedAt: DateTime.tryParse(j['removedAt'] as String? ?? ''),
+    revision: j['revision'] as int? ?? 0,
+    hidden: j['hidden'] == true,
+    canDeleteForEveryone: j['canDeleteForEveryone'] == true,
     id: j['id'] as String,
     senderId: j['senderId'] as String,
     senderDisplayName: j['senderDisplayName'] as String?,
@@ -101,6 +162,10 @@ class ChatMessage {
 
 /// REST/history and socket echoes must not undo a confirmed status or local order.
 ChatMessage reconcileMessage(ChatMessage previous, ChatMessage incoming) {
+  if (previous.hidden ||
+      (!incoming.hidden && previous.revision > incoming.revision)) {
+    return previous;
+  }
   if (previous.isConfirmed && !incoming.isConfirmed) return previous;
   final status =
       previous.isConfirmed &&
@@ -111,6 +176,11 @@ ChatMessage reconcileMessage(ChatMessage previous, ChatMessage incoming) {
   return incoming.withDelivery(
     status,
     error: incoming.sendError,
+    reply:
+        previous.reply?.unavailable == true &&
+            previous.replyToId == incoming.replyToId
+        ? previous.reply
+        : incoming.reply,
     localCreatedAt:
         previous.localCreatedAt ??
         (!previous.isConfirmed ? previous.createdAt : null),

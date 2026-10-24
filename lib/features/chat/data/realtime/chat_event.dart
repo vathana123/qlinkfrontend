@@ -14,7 +14,7 @@ class ChatEvent {
   final String eventId, roomId, roomType;
   final ChatMessage? message;
   final String type;
-  bool get isGroupChange => type != 'MESSAGE_CREATED';
+  bool get isGroupChange => type.startsWith('GROUP_');
   final ChatRoom? room;
   static ChatEvent? parse(String body) {
     try {
@@ -22,6 +22,8 @@ class ChatEvent {
       if (j is! Map<String, dynamic> ||
           !{
             'MESSAGE_CREATED',
+            'MESSAGE_UPDATED',
+            'MESSAGE_HIDDEN',
             'GROUP_UPDATED',
             'GROUP_REMOVED',
           }.contains(j['type'])) {
@@ -38,7 +40,7 @@ class ChatEvent {
         return null;
       }
       final m = j['message'];
-      if (j['type'] != 'MESSAGE_CREATED') {
+      if ((j['type'] as String).startsWith('GROUP_')) {
         if (j['roomType'] == 'PERSONAL') return null;
         ChatRoom? room;
         if (j['type'] == 'GROUP_UPDATED') {
@@ -75,30 +77,32 @@ class ChatEvent {
       bool positiveInt(dynamic value) => value is int && value > 0;
       final content = m['content'] as String;
       // Missing type retains the existing legacy TEXT behavior.
-      switch (m['type'] ?? 'TEXT') {
-        case 'TEXT':
-          if (content.trim().isEmpty) return null;
-        case 'VOICE':
-          if (content.isNotEmpty ||
-              !text(m['fileId']) ||
-              !positiveInt(m['durationMs']) ||
-              !text(m['audioContentType']) ||
-              !positiveInt(m['audioSizeBytes'])) {
+      if (m['hidden'] != true && m['removedAt'] == null) {
+        switch (m['type'] ?? 'TEXT') {
+          case 'TEXT':
+            if (content.trim().isEmpty) return null;
+          case 'VOICE':
+            if (content.isNotEmpty ||
+                !text(m['fileId']) ||
+                !positiveInt(m['durationMs']) ||
+                !text(m['audioContentType']) ||
+                !positiveInt(m['audioSizeBytes'])) {
+              return null;
+            }
+          case 'IMAGE':
+          case 'FILE':
+            final attachment = m['attachment'];
+            if (content.isNotEmpty ||
+                !text(m['fileId']) ||
+                attachment is! Map<String, dynamic> ||
+                !text(attachment['originalName']) ||
+                !text(attachment['contentType']) ||
+                !positiveInt(attachment['sizeBytes'])) {
+              return null;
+            }
+          default:
             return null;
-          }
-        case 'IMAGE':
-        case 'FILE':
-          final attachment = m['attachment'];
-          if (content.isNotEmpty ||
-              !text(m['fileId']) ||
-              attachment is! Map<String, dynamic> ||
-              !text(attachment['originalName']) ||
-              !text(attachment['contentType']) ||
-              !positiveInt(attachment['sizeBytes'])) {
-            return null;
-          }
-        default:
-          return null;
+        }
       }
       ChatRoom? room;
       if (j['room'] != null) {
@@ -116,6 +120,7 @@ class ChatEvent {
         j['roomId'] as String,
         j['roomType'] as String,
         ChatMessage.fromJson(m),
+        type: j['type'] as String,
         room: room,
       );
     } catch (_) {

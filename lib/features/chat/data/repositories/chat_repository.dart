@@ -141,12 +141,41 @@ class ChatRepository {
     );
   }
 
+  Future<ChatMessage> editMessage(
+    String room,
+    ChatMessage message,
+    String content,
+  ) async {
+    final response = await api.dio.patch<dynamic>(
+      '/api/v1/chat/rooms/$room/messages/${message.id}',
+      data: {'content': content, 'revision': message.revision},
+    );
+    return ChatMessage.fromJson(
+      Map<String, dynamic>.from(response.data['data'] as Map),
+    );
+  }
+
+  Future<ChatMessage> deleteMessage(
+    String room,
+    ChatMessage message, {
+    required bool everyone,
+  }) async {
+    final response = await api.dio.delete<dynamic>(
+      '/api/v1/chat/rooms/$room/messages/${message.id}',
+      queryParameters: {'everyone': everyone},
+    );
+    return ChatMessage.fromJson(
+      Map<String, dynamic>.from(response.data['data'] as Map),
+    );
+  }
+
   Future<SendResult> send({
     String? roomId,
     required String recipientId,
     required String key,
     required String content,
     String? fileId,
+    String? replyToId,
     int? durationMs,
     String type = 'VOICE',
     CancelToken? cancelToken,
@@ -157,6 +186,7 @@ class ChatRepository {
         if (roomId == null) 'recipientId': recipientId,
         'clientMessageId': key,
         'content': content,
+        'replyToId': ?replyToId,
         if (fileId != null) ...{
           'type': type,
           'fileId': fileId,

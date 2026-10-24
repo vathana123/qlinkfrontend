@@ -112,6 +112,57 @@ class ChatCubit extends Cubit<ChatState> {
   final Conversation conversation;
   final String senderId;
   String get _draftKey => OutgoingQueue.conversationKey(senderId, conversation);
+  ChatMessage? replyTo;
+  void selectReply(ChatMessage? message) {
+    replyTo = message;
+    _update();
+  }
+
+  Future<bool> editMessage(ChatMessage message, String content) async {
+    if (state.roomId == null) return false;
+    try {
+      final updated = await repository.editMessage(
+        state.roomId!,
+        message,
+        content,
+      );
+      if (!isClosed) _update(messages: _merge([updated]));
+      return true;
+    } catch (e) {
+      _update(error: chatError(e));
+      return false;
+    }
+  }
+
+  Future<void> deleteMessage(
+    ChatMessage message, {
+    required bool everyone,
+  }) async {
+    if (state.roomId == null) return;
+    try {
+      final updated = await repository.deleteMessage(
+        state.roomId!,
+        message,
+        everyone: everyone,
+      );
+      if (!isClosed) _update(messages: _merge([updated]));
+    } catch (e) {
+      _update(error: chatError(e));
+    }
+  }
+
+  Future<bool> findOriginal(String id) async {
+    while (!isClosed && !state.removed) {
+      if (state.messages.any((m) => m.id == id)) return true;
+      if (state.cursor == null || state.loading || _syncing) return false;
+      final cursor = state.cursor;
+      await load();
+      if (cursor == state.cursor) return false;
+    }
+    return false;
+  }
+
+  final _hiddenIds = <String>{};
   bool _loaded = false;
   int _accessGeneration = 0;
   void _failure(Object e) {
@@ -137,6 +188,7 @@ class ChatCubit extends Cubit<ChatState> {
     String? error,
   }) {
     if (isClosed) return;
+    if (removed == true) replyTo = null;
     emit(
       ChatState(
         roomId: roomId ?? state.roomId,
@@ -155,7 +207,9 @@ class ChatCubit extends Cubit<ChatState> {
 
   List<ChatMessage> _merge(Iterable<ChatMessage> incoming) {
     final all = [...state.messages];
-    for (var m in incoming) {
+    final changes = incoming.toList();
+    for (var m in changes) {
+      if (m.hidden) _hiddenIds.add(m.id);
       final index = all.indexWhere(
         (old) =>
             old.id == m.id ||
@@ -170,6 +224,37 @@ class ChatCubit extends Cubit<ChatState> {
                 old.clientMessageId == m.clientMessageId),
       );
       all.add(m);
+    }
+    all.removeWhere((m) => _hiddenIds.contains(m.id));
+    for (var i = 0; i < all.length; i++) {
+      if (_hiddenIds.contains(all[i].replyToId)) {
+        all[i] = all[i].withDelivery(
+          all[i].delivery,
+          reply: ReplyPreview(
+            all[i].replyToId!,
+            'Message unavailable',
+            unavailable: true,
+          ),
+        );
+        continue;
+      }
+      final original =
+          all.where((m) => m.id == all[i].replyToId).firstOrNull ??
+          changes.where((m) => m.id == all[i].replyToId).firstOrNull;
+      if (original != null) {
+        final current =
+            all.where((m) => m.id == original.id).firstOrNull ?? original;
+        all[i] = all[i].withDelivery(
+          all[i].delivery,
+          reply: ReplyPreview.fromMessage(current),
+        );
+      }
+    }
+    if (replyTo != null) {
+      final changed = changes.where((m) => m.id == replyTo!.id).firstOrNull;
+      if (changed != null) {
+        replyTo = changed.deleted || changed.hidden ? null : changed;
+      }
     }
     return all..sort((a, b) {
       final c = b.displayTime.compareTo(a.displayTime);
@@ -294,7 +379,10 @@ class ChatCubit extends Cubit<ChatState> {
       content: text,
       createdAt: DateTime.now().toUtc(),
       delivery: Delivery.sending,
+      replyToId: replyTo?.id,
+      reply: replyTo == null ? null : ReplyPreview.fromMessage(replyTo!),
     );
+    replyTo = null;
     _update(messages: _merge([message]));
     return _transmit(message);
   }
@@ -314,10 +402,13 @@ class ChatCubit extends Cubit<ChatState> {
       content: '',
       createdAt: DateTime.now().toUtc(),
       delivery: Delivery.sending,
+      replyToId: replyTo?.id,
+      reply: replyTo == null ? null : ReplyPreview.fromMessage(replyTo!),
       type: 'VOICE',
       durationMs: durationMs,
       localPath: path,
     );
+    replyTo = null;
     _update(messages: _merge([message]));
     return _transmit(message);
   }
@@ -345,10 +436,13 @@ class ChatCubit extends Cubit<ChatState> {
       content: '',
       createdAt: DateTime.now().toUtc(),
       delivery: Delivery.sending,
+      replyToId: replyTo?.id,
+      reply: replyTo == null ? null : ReplyPreview.fromMessage(replyTo!),
       type: metadata.contentType.startsWith('image/') ? 'IMAGE' : 'FILE',
       localPath: path,
       attachment: metadata,
     );
+    replyTo = null;
     _update(messages: _merge([message]));
     return _transmit(message, prepare: prepare, ownsFile: ownsFile);
   }

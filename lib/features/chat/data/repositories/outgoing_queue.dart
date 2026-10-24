@@ -273,6 +273,7 @@ class OutgoingQueue {
       if (!job.message.isConfirmed) {
         message = job.message;
         final result = await repository.send(
+          replyToId: job.message.replyToId,
           roomId: job.roomId,
           recipientId: job.recipientId,
           key: message.clientMessageId,

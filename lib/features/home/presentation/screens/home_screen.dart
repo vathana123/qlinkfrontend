@@ -179,7 +179,9 @@ class _RoomsViewState extends State<_RoomsView> {
                 ChatListTile(
                   chat: ChatPreview(
                     room.title,
-                    room.lastMessage?.isVoice == true
+                    room.lastMessage?.deleted == true
+                        ? 'Message deleted'
+                        : room.lastMessage?.isVoice == true
                         ? 'Voice message'
                         : room.lastMessage?.isAttachment == true
                         ? room.lastMessage?.attachment?.originalName ??
