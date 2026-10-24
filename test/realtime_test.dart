@@ -15,6 +15,7 @@ import 'package:qlinkfrontend/features/auth/presentation/bloc/auth_bloc.dart';
 import 'package:qlinkfrontend/features/chat/data/datasources/chat_api.dart';
 import 'package:qlinkfrontend/features/chat/data/models/chat_models.dart';
 import 'package:qlinkfrontend/features/chat/data/repositories/chat_repository.dart';
+import 'package:qlinkfrontend/features/chat/data/repositories/outgoing_queue.dart';
 import 'package:qlinkfrontend/features/chat/data/realtime/chat_event.dart';
 import 'package:qlinkfrontend/features/chat/data/realtime/chat_realtime.dart';
 import 'package:qlinkfrontend/features/chat/data/realtime/chat_socket.dart';
@@ -173,22 +174,196 @@ void main() {
           jsonEncode(eventJson(message, type: roomType)),
         );
         expect(parsed, isNotNull, reason: '$roomType/$type');
-        expect(parsed!.message.id, 'one');
-        expect(parsed.message.clientMessageId, 'one');
-        expect(parsed.message.type, type);
-        expect(parsed.message.content, type == 'TEXT' ? 'message one' : '');
+        expect(parsed!.message!.id, 'one');
+        expect(parsed.message!.clientMessageId, 'one');
+        expect(parsed.message!.type, type);
+        expect(parsed.message!.content, type == 'TEXT' ? 'message one' : '');
         if (type == 'VOICE') {
-          expect(parsed.message.durationMs, 1000);
-          expect(parsed.message.audioSizeBytes, 32044);
+          expect(parsed.message!.durationMs, 1000);
+          expect(parsed.message!.audioSizeBytes, 32044);
         } else if (type != 'TEXT') {
-          expect(parsed.message.attachment!.sizeBytes, 1024);
+          expect(parsed.message!.attachment!.sizeBytes, 1024);
         }
       }
     }
     final legacy = msg('legacy')..remove('type');
-    expect(event(legacy).message.type, 'TEXT');
-    expect(event({...legacy, 'type': null}).message.type, 'TEXT');
+    expect(event(legacy).message!.type, 'TEXT');
+    expect(event({...legacy, 'type': null}).message!.type, 'TEXT');
   });
+
+  test('group update and removal events parse authorized room state', () {
+    final updatedRoom = {
+      ...room(id: 'group', type: 'GROUP_PRIVATE'),
+      'myRole': 'CO_OWNER',
+      'membersCanSend': false,
+      'membersCanInvite': true,
+      'description': 'Group notes',
+      'messageHistoryVisibility': 'VIEW_AFTER_JOIN',
+    };
+    final updated = ChatEvent.parse(
+      jsonEncode({
+        'eventId': 'update-1',
+        'type': 'GROUP_UPDATED',
+        'roomId': 'group',
+        'roomType': 'GROUP_PRIVATE',
+        'message': null,
+        'room': updatedRoom,
+      }),
+    );
+    expect(updated?.isGroupChange, isTrue);
+    expect(updated?.room?.myRole, 'CO_OWNER');
+    expect(updated?.room?.membersCanSend, isFalse);
+    expect(updated?.room?.membersCanInvite, isTrue);
+    expect(updated?.message, isNull);
+
+    final removed = ChatEvent.parse(
+      jsonEncode({
+        'eventId': 'remove-1',
+        'type': 'GROUP_REMOVED',
+        'roomId': 'group',
+        'roomType': 'GROUP_PRIVATE',
+        'message': null,
+        'room': null,
+      }),
+    );
+    expect(removed?.type, 'GROUP_REMOVED');
+    expect(removed?.room, isNull);
+    expect(
+      ChatEvent.parse(
+        jsonEncode({
+          'eventId': 'bad',
+          'type': 'GROUP_UPDATED',
+          'roomId': 'group',
+          'roomType': 'GROUP_PRIVATE',
+          'room': {...updatedRoom, 'myRole': null},
+        }),
+      ),
+      isNull,
+    );
+  });
+
+  test(
+    'group role and removal events update open chat and Home without reload',
+    () async {
+      final events = StreamController<ChatEvent>.broadcast();
+      Map<String, dynamic> groupRoom(bool canSend) => {
+        'id': 'group',
+        'type': 'GROUP_PRIVATE',
+        'name': 'Friends',
+        'participant': null,
+        'memberCount': 2,
+        'myRole': 'MEMBER',
+        'membersCanSend': canSend,
+        'membersCanInvite': false,
+        'messageHistoryVisibility': 'VIEW_AFTER_JOIN',
+        'lastMessage': null,
+        'lastMessageAt': null,
+      };
+      final adapter = FakeAdapter((request) {
+        if (request.path == '/api/v1/chat/rooms') {
+          return response(
+            envelope({
+              'content': [groupRoom(true)],
+              'last': true,
+            }),
+          );
+        }
+        if (request.path == '/api/v1/chat/groups/group') {
+          return response(envelope(groupRoom(false)));
+        }
+        return response(envelope({'items': [], 'nextCursor': null}));
+      });
+      final repository = ChatRepository(
+        ChatApi(Dio()..httpClientAdapter = adapter),
+        events: events.stream,
+      );
+      final groupChat = ChatCubit(
+        repository,
+        Conversation.fromRoom(ChatRoom.fromJson(groupRoom(true))),
+        'alice',
+      );
+      final rooms = RoomsCubit(repository);
+      await rooms.load();
+      final updated = ChatEvent.parse(
+        jsonEncode({
+          'eventId': 'update',
+          'type': 'GROUP_UPDATED',
+          'roomId': 'group',
+          'roomType': 'GROUP_PRIVATE',
+          'message': null,
+          'room': groupRoom(false),
+        }),
+      )!;
+      events.add(updated);
+      await until(
+        () =>
+            !groupChat.state.canSend &&
+            !rooms.state.items.single.membersCanSend,
+      );
+      expect(await groupChat.send('blocked by group settings'), isFalse);
+      expect(
+        adapter.requests.where((request) => request.method == 'POST'),
+        isEmpty,
+      );
+
+      events.add(
+        ChatEvent.parse(
+          jsonEncode({
+            'eventId': 'removed',
+            'type': 'GROUP_REMOVED',
+            'roomId': 'group',
+            'roomType': 'GROUP_PRIVATE',
+            'message': null,
+            'room': null,
+          }),
+        )!,
+      );
+      await until(() => groupChat.state.removed && rooms.state.items.isEmpty);
+      expect(groupChat.state.messages, isEmpty);
+      await groupChat.close();
+      await rooms.close();
+      await repository.dispose();
+      await events.close();
+    },
+  );
+
+  test(
+    'server access revocation clears pending group messages and queue',
+    () async {
+      final adapter = FakeAdapter(
+        (_) => response({
+          'success': false,
+          'message': 'Active room membership required',
+          'data': {'code': 'ROOM_ACCESS_DENIED', 'fields': {}},
+        }, status: 403),
+      );
+      final repository = ChatRepository(
+        ChatApi(Dio()..httpClientAdapter = adapter),
+      );
+      final conversation = Conversation.fromRoom(
+        const ChatRoom(
+          'group',
+          null,
+          type: 'GROUP_PRIVATE',
+          name: 'Friends',
+          memberCount: 2,
+          myRole: 'MEMBER',
+        ),
+      );
+      final chat = ChatCubit(repository, conversation, 'alice');
+      expect(await chat.send('pending message'), isFalse);
+      expect(chat.state.removed, isTrue);
+      expect(chat.state.messages, isEmpty);
+      expect(
+        repository.outbox.messages(
+          OutgoingQueue.conversationKey('alice', conversation),
+        ),
+        isEmpty,
+      );
+      await chat.close();
+      await repository.dispose();
+    },
+  );
 
   test(
     'unsupported types and missing or malformed media metadata are rejected',
@@ -422,7 +597,7 @@ void main() {
     'typed events reject malformed, unsupported, and inconsistent payloads',
     () {
       expect(
-        ChatEvent.parse(jsonEncode(eventJson(msg('one'))))?.message.id,
+        ChatEvent.parse(jsonEncode(eventJson(msg('one'))))?.message!.id,
         'one',
       );
       for (final body in [

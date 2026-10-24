@@ -30,7 +30,7 @@ class ChatListTile extends StatelessWidget {
       onTap: onTap,
       leading: Stack(
         children: [
-          if (chat.isGroup)
+          if (chat.isGroup && chat.avatarUrl == null)
             const CircleAvatar(radius: 27, child: Icon(Icons.group_outlined))
           else
             UserAvatar(name: chat.name, url: chat.avatarUrl),

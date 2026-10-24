@@ -32,6 +32,7 @@ class RoomsCubit extends Cubit<RoomsState> {
   late final StreamSubscription<ChatEvent> _events;
   late final StreamSubscription<ChatConnection> _connections;
   int _page = 0;
+  int _revision = 0;
   bool _refreshQueued = false;
   int _compare(ChatRoom a, ChatRoom b) {
     final time = (b.lastMessageAt ?? DateTime.fromMillisecondsSinceEpoch(0))
@@ -39,7 +40,7 @@ class RoomsCubit extends Cubit<RoomsState> {
     return time != 0 ? time : b.id.compareTo(a.id);
   }
 
-  List<ChatRoom> _merge(Iterable<ChatRoom> incoming) {
+  List<ChatRoom> _merge(Iterable<ChatRoom> incoming, {bool replace = false}) {
     final all = {for (final room in state.items) room.id: room};
     for (var room in incoming) {
       final old = all[room.id];
@@ -54,10 +55,35 @@ class RoomsCubit extends Cubit<RoomsState> {
       }
       all[room.id] = room;
     }
-    return all.values.toList()..sort(_compare);
+    final ids = incoming.map((r) => r.id).toSet();
+    return all.values.where((r) => !replace || ids.contains(r.id)).toList()
+      ..sort(_compare);
   }
 
   void _received(ChatEvent event) {
+    _revision++;
+    if (event.type == 'GROUP_REMOVED') {
+      emit(
+        RoomsState(
+          loading: state.loading,
+          items: state.items.where((r) => r.id != event.roomId).toList(),
+          hasMore: state.hasMore,
+        ),
+      );
+      return;
+    }
+    if (event.type == 'GROUP_UPDATED') {
+      if (event.room != null) {
+        emit(
+          RoomsState(
+            items: _merge([event.room!]),
+            loading: state.loading,
+            hasMore: state.hasMore,
+          ),
+        );
+      }
+      return;
+    }
     final known = state.items.where((r) => r.id == event.roomId).firstOrNull;
     final room = event.room ?? known;
     if (room == null) {
@@ -66,9 +92,9 @@ class RoomsCubit extends Cubit<RoomsState> {
     }
     final candidate =
         room.lastMessage != null &&
-            room.lastMessage!.createdAt.isAfter(event.message.createdAt)
+            room.lastMessage!.createdAt.isAfter(event.message!.createdAt)
         ? room
-        : room.withMessage(event.message);
+        : room.withMessage(event.message!);
     emit(
       RoomsState(
         items: _merge([candidate]),
@@ -82,9 +108,15 @@ class RoomsCubit extends Cubit<RoomsState> {
     if (refresh) return synchronize();
     if (state.loading || !state.hasMore) return;
     emit(RoomsState(items: state.items, loading: true, hasMore: state.hasMore));
+    final revision = _revision;
     try {
       final result = await repository.rooms(page: _page);
       if (isClosed) return;
+      if (revision != _revision) {
+        _refreshQueued = true;
+        emit(RoomsState(items: state.items, hasMore: state.hasMore));
+        return;
+      }
       _page++;
       emit(RoomsState(items: _merge(result.items), hasMore: result.hasMore));
     } catch (e) {
@@ -114,21 +146,27 @@ class RoomsCubit extends Cubit<RoomsState> {
       final count = max(1, _page);
       ResultPage<ChatRoom>? result;
       int fetched = 0;
+      final revision = _revision;
+      final fetchedRooms = <ChatRoom>[];
       for (int page = 0; page < count; page++) {
         result = await repository.rooms(page: page);
         if (isClosed) return;
         fetched++;
-        emit(
-          RoomsState(
-            items: _merge(result.items),
-            loading: true,
-            hasMore: result.hasMore,
-          ),
-        );
+        fetchedRooms.addAll(result.items);
         if (!result.hasMore) break;
       }
+      if (revision != _revision) {
+        _refreshQueued = true;
+        emit(RoomsState(items: state.items, hasMore: state.hasMore));
+        return;
+      }
       _page = fetched;
-      emit(RoomsState(items: state.items, hasMore: result?.hasMore ?? false));
+      emit(
+        RoomsState(
+          items: _merge(fetchedRooms, replace: true),
+          hasMore: result?.hasMore ?? false,
+        ),
+      );
     } catch (e) {
       if (!isClosed) {
         emit(

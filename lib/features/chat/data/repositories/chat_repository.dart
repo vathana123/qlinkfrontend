@@ -86,6 +86,30 @@ class ChatRepository {
 
   Future<PublicUser> resolve(String id) async =>
       PublicUser.fromJson(await api.get('users/$id/public'));
+  Future<ChatRoom> group(String id) async =>
+      ChatRoom.fromJson(await api.get('chat/groups/$id'));
+  Future<List<Map<String, dynamic>>> groupMembers(String id) async {
+    final response = await api.dio.get<dynamic>(
+      '/api/v1/chat/groups/$id/members',
+    );
+    return (response.data['data'] as List)
+        .map((v) => Map<String, dynamic>.from(v as Map))
+        .toList();
+  }
+
+  Future<void> groupAction(
+    String id,
+    String method,
+    String suffix, [
+    Map<String, dynamic>? body,
+  ]) async {
+    await api.dio.request<dynamic>(
+      '/api/v1/chat/groups/$id$suffix',
+      data: body,
+      options: Options(method: method),
+    );
+  }
+
   Future<Conversation> conversation(PublicUser user) async {
     final j = await api.get('chat/personal/with/${user.id}');
     return Conversation(

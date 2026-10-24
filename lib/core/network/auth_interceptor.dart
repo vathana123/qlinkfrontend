@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 
 import '../storage/token_storage.dart';
+import '../error/app_exception.dart';
 import 'api_endpoints.dart';
 
 class AuthInterceptor extends Interceptor {
@@ -36,6 +37,10 @@ class AuthInterceptor extends Interceptor {
             entry.key: entry.value,
       };
       if (!_public(options)) {
+        // A refresh already in flight owns credential renewal. Do not send
+        // additional protected requests with the token it is replacing.
+        final refreshing = _refreshing;
+        if (refreshing != null) await refreshing;
         final tokens = await _storage.read();
         if (tokens != null) {
           options.headers['Authorization'] = 'Bearer ${tokens.accessToken}';
@@ -43,8 +48,17 @@ class AuthInterceptor extends Interceptor {
         }
       }
       handler.next(options);
-    } catch (_) {
-      handler.reject(DioException(requestOptions: options));
+    } catch (error) {
+      handler.reject(
+        DioException(
+          requestOptions: options,
+          error: error is DioException
+              ? error.error
+              : const AppException(
+                  'Session verification is temporarily unavailable. Please retry.',
+                ),
+        ),
+      );
     }
   }
 
@@ -90,13 +104,14 @@ class AuthInterceptor extends Interceptor {
       // Refresh expires inside _rotate; a retried request's 5xx is not logout.
       handler.next(retryError);
     } catch (_) {
-      try {
-        await _expire();
-      } catch (_) {
-        // An unavailable secure store must not leave Dio's handler open.
-        // _expire still notifies AuthBloc in its finally block.
-      }
-      handler.next(error);
+      // Local storage/decoding failures are not proof that credentials were revoked.
+      handler.next(
+        error.copyWith(
+          error: const AppException(
+            'Session verification is temporarily unavailable. Please retry.',
+          ),
+        ),
+      );
     }
   }
 
@@ -140,13 +155,26 @@ class AuthInterceptor extends Interceptor {
       await _storage.write(tokens);
       _tokenChanges.add(tokens.accessToken);
       return tokens;
-    } catch (_) {
+    } catch (error) {
       // A stale refresh must never clear a different account or revive a logged-out session.
-      if (old != null &&
+      final terminal =
+          error is DioException && error.response?.statusCode == 401;
+      if (terminal &&
+          old != null &&
           (await _storage.read())?.refreshToken == old.refreshToken) {
         await _expire();
       }
-      rethrow;
+      if (terminal) rethrow;
+      // Preserve the existing account-change cancellation contract.
+      if (error is StateError) rethrow;
+      const recoverable = AppException(
+        'Session verification is temporarily unavailable. Please retry.',
+      );
+      if (error is DioException) throw error.copyWith(error: recoverable);
+      throw DioException(
+        requestOptions: RequestOptions(path: ApiEndpoints.refresh),
+        error: recoverable,
+      );
     }
   }
 

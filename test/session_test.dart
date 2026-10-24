@@ -163,7 +163,7 @@ void main() {
     await pending;
     expect(refreshes, 1);
   });
-  for (final status in [401, 500]) {
+  for (final status in [401]) {
     test(
       'refresh $status clears session and never recursively refreshes',
       () async {
@@ -189,6 +189,93 @@ void main() {
       },
     );
   }
+  for (final failure in <Object>[
+    DioExceptionType.connectionError,
+    DioExceptionType.connectionTimeout,
+    DioExceptionType.sendTimeout,
+    DioExceptionType.receiveTimeout,
+    500,
+    502,
+    503,
+    504,
+  ]) {
+    test(
+      'refresh $failure preserves credentials and permits later recovery',
+      () async {
+        var expired = 0, refreshes = 0;
+        var recover = false;
+        client.auth.onSessionExpired = () => expired++;
+        final adapter = FakeAdapter((request) {
+          if (request.path == ApiEndpoints.refresh) {
+            refreshes++;
+            if (recover) return response(envelope(sessionJson()));
+            if (failure is int) return response({}, status: failure);
+            throw DioException(
+              requestOptions: request,
+              type: failure as DioExceptionType,
+            );
+          }
+          return request.headers['Authorization'] == 'Bearer new-access'
+              ? response(envelope(userJson))
+              : response({}, status: 401);
+        });
+        client.dio.httpClientAdapter = adapter;
+        await expectLater(
+          client.dio.get<dynamic>(ApiEndpoints.me),
+          throwsA(isA<DioException>()),
+        );
+        expect(storage.tokens?.refreshToken, 'old-refresh');
+        expect(expired, 0);
+        expect(refreshes, 1);
+        expect(
+          adapter.requests,
+          hasLength(2),
+        ); // No protected retry after failure.
+        recover = true;
+        expect(
+          (await client.dio.get<dynamic>(ApiEndpoints.me)).statusCode,
+          200,
+        );
+        expect(storage.tokens?.refreshToken, 'new-refresh');
+        expect(refreshes, 2);
+      },
+    );
+  }
+
+  test(
+    'concurrent recoverable refresh failure is shared and new requests wait',
+    () async {
+      final refreshing = Completer<void>(), release = Completer<void>();
+      var refreshes = 0, protected = 0;
+      client.dio.httpClientAdapter = FakeAdapter((request) async {
+        if (request.path == ApiEndpoints.refresh) {
+          refreshes++;
+          refreshing.complete();
+          await release.future;
+          return response({}, status: 503);
+        }
+        protected++;
+        return response({}, status: 401);
+      });
+      final a = expectLater(
+        client.dio.get<dynamic>(ApiEndpoints.me),
+        throwsA(isA<DioException>()),
+      );
+      await refreshing.future;
+      final b = expectLater(
+        client.dio.get<dynamic>('/api/v1/chat/rooms'),
+        throwsA(isA<DioException>()),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(protected, 1);
+      release.complete();
+      await Future.wait([a, b]);
+      expect(refreshes, 1);
+      expect(protected, 1);
+      expect(storage.tokens?.refreshToken, 'old-refresh');
+    },
+  );
+
   test('retry is bounded to once if fresh access token is rejected', () async {
     var expired = 0;
     client.auth.onSessionExpired = () => expired++;

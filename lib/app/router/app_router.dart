@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../../features/chat/presentation/screens/group_info_screen.dart';
+
 import '../../features/chat/presentation/screens/create_group_screen.dart';
 import '../../features/chat/presentation/screens/select_group_members_screen.dart';
 import '../../features/chat/presentation/bloc/group_creation_cubit.dart';
@@ -65,6 +67,10 @@ GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
           s.extra is GroupCreationCubit ? null : '/create-group',
       builder: (_, s) =>
           SelectGroupMembersScreen(cubit: s.extra! as GroupCreationCubit),
+    ),
+    GoRoute(
+      path: '/groups/:id',
+      builder: (_, s) => GroupInfoScreen(roomId: s.pathParameters['id']!),
     ),
     GoRoute(path: '/search', builder: (_, _) => const UserSearchScreen()),
     GoRoute(path: '/scan', builder: (_, _) => const QrScannerScreen()),

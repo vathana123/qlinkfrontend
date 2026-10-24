@@ -7,6 +7,7 @@ class AppException implements Exception {
   static AppException from(Object error) {
     if (error is AppException) return error;
     if (error is DioException) {
+      if (error.error is AppException) return error.error! as AppException;
       final body = error.response?.data;
       final details = body is Map ? body['data'] : null;
       final code = details is Map ? details['code'] : null;
