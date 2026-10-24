@@ -254,7 +254,12 @@ class _GroupInfoViewState extends State<_GroupInfoView> {
         return RefreshIndicator(
           onRefresh: cubit.load,
           child: ListView(
-            padding: const EdgeInsets.all(20),
+            padding: EdgeInsets.symmetric(
+              vertical: 24,
+              horizontal: MediaQuery.sizeOf(context).width > 720
+                  ? (MediaQuery.sizeOf(context).width - 680) / 2
+                  : 20,
+            ),
             children: [
               Center(
                 child: UserAvatar(
@@ -263,11 +268,14 @@ class _GroupInfoViewState extends State<_GroupInfoView> {
                   radius: 44,
                 ),
               ),
+              const SizedBox(height: 16),
               Text(
                 room.title,
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.headlineSmall,
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w700),
               ),
+              const SizedBox(height: 6),
               Text(
                 '${room.type == 'GROUP_PUBLIC' ? 'Public' : 'Private'} group · ${room.memberCount} members',
                 textAlign: TextAlign.center,
@@ -277,10 +285,13 @@ class _GroupInfoViewState extends State<_GroupInfoView> {
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   child: Text(room.description!),
                 ),
+              const SizedBox(height: 12),
               Text(
                 room.messageHistoryVisibility == 'VIEW_AFTER_JOIN'
                     ? 'Members see messages sent after their latest join.'
                     : 'Members can see all group history.',
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colors.onSurfaceVariant),
               ),
               if (busy) const LinearProgressIndicator(),
               if (state.error != null)
@@ -354,7 +365,17 @@ class _GroupInfoViewState extends State<_GroupInfoView> {
               ),
               for (final member in state.members)
                 ListTile(
-                  contentPadding: EdgeInsets.zero,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 4,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(
+                      color: colors.outlineVariant.withValues(alpha: .4),
+                    ),
+                  ),
+                  tileColor: colors.surfaceContainerLow,
                   leading: UserAvatar(
                     name: member['displayName'] as String? ?? 'Member',
                     url: member['avatarUrl'] as String?,
@@ -363,7 +384,11 @@ class _GroupInfoViewState extends State<_GroupInfoView> {
                   title: Text(
                     '${member['displayName']}${member['id'] == me ? ' (you)' : ''}',
                   ),
-                  subtitle: Text(_role(member['role'] as String)),
+                  subtitle: Text(
+                    _role(member['role'] as String),
+                    style: Theme.of(context).textTheme.labelMedium
+                        ?.copyWith(color: colors.onSurfaceVariant),
+                  ),
                   trailing:
                       !busy &&
                           member['id'] != me &&

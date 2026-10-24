@@ -21,7 +21,6 @@ class _ProfileView extends StatelessWidget {
   const _ProfileView();
   @override
   Widget build(BuildContext context) => Scaffold(
-    backgroundColor: Theme.of(context).colorScheme.surface,
     extendBodyBehindAppBar: true,
     appBar: const BlurAppBar(title: 'Profile'),
     body: BlocBuilder<AuthBloc, AuthState>(
@@ -34,7 +33,7 @@ class _ProfileView extends StatelessWidget {
             child: ListView(
               padding: EdgeInsets.fromLTRB(
                 24,
-                MediaQuery.paddingOf(context).top + kToolbarHeight + 28,
+                MediaQuery.paddingOf(context).top + kToolbarHeight + 20,
                 24,
                 MediaQuery.paddingOf(context).bottom + 24,
               ),
@@ -63,10 +62,21 @@ class _ProfileView extends StatelessWidget {
                 Center(
                   child: InkWell(
                     onTap: () => context.push('/profile/edit'),
-                    child: UserAvatar(
-                      name: user.displayName,
-                      url: user.avatarUrl,
-                      radius: 42,
+                    borderRadius: BorderRadius.circular(56),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Theme.of(context).colorScheme.surfaceContainer,
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
+                      child: UserAvatar(
+                        name: user.displayName,
+                        url: user.avatarUrl,
+                        radius: 42,
+                      ),
                     ),
                   ),
                 ),
@@ -90,22 +100,34 @@ class _ProfileView extends StatelessWidget {
                       ),
                     ),
                   ),
-                ListTile(
-                  leading: const Icon(Icons.alternate_email),
-                  title: const Text('Edit profile'),
-                  subtitle: Text(
-                    user.username == null
-                        ? 'Set your username'
-                        : '@${user.username}',
+                const SizedBox(height: 8),
+                Card(
+                  elevation: 0,
+                  margin: EdgeInsets.zero,
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    children: [
+                      ListTile(
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        leading: const Icon(Icons.alternate_email),
+                        title: const Text('Edit profile'),
+                        subtitle: Text(
+                          user.username == null
+                              ? 'Set your username'
+                              : '@${user.username}',
+                        ),
+                        onTap: () => context.push('/profile/edit'),
+                      ),
+                      ListTile(
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        leading: const Icon(Icons.qr_code),
+                        title: const Text('My QR code'),
+                        onTap: () => context.push('/my-qr'),
+                      ),
+                    ],
                   ),
-                  onTap: () => context.push('/profile/edit'),
                 ),
-                ListTile(
-                  leading: const Icon(Icons.qr_code),
-                  title: const Text('My QR code'),
-                  onTap: () => context.push('/my-qr'),
-                ),
-                const SizedBox(height: 36),
+                const SizedBox(height: 28),
                 Text(
                   'Make it yours',
                   style: Theme.of(context).textTheme.titleLarge,
@@ -130,6 +152,14 @@ class _ProfileView extends StatelessWidget {
                                         .colorScheme
                                         .surfaceContainerLow,
                               borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: mode == option
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Theme.of(context)
+                                          .colorScheme
+                                          .outlineVariant
+                                          .withValues(alpha: .6),
+                              ),
                             ),
                             child: Material(
                               color: Colors.transparent,

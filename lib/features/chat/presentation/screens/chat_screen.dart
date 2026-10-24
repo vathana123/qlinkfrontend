@@ -381,7 +381,8 @@ class _ChatViewState extends State<_ChatView> {
                                         ),
                                   constraints: BoxConstraints(
                                     maxWidth:
-                                        MediaQuery.sizeOf(context).width * .8,
+                                        (MediaQuery.sizeOf(context).width * .82)
+                                            .clamp(0.0, 560.0),
                                   ),
                                   decoration: BoxDecoration(
                                     border: message.id == _highlight
@@ -389,11 +390,23 @@ class _ChatViewState extends State<_ChatView> {
                                             color: colors.primary,
                                             width: 2,
                                           )
-                                        : null,
+                                        : Border.all(
+                                            color: colors.outlineVariant
+                                                .withValues(alpha: .35),
+                                          ),
                                     color: mine
                                         ? colors.primaryContainer
-                                        : colors.surfaceContainerHigh,
-                                    borderRadius: BorderRadius.circular(18),
+                                        : colors.surfaceContainer,
+                                    borderRadius: BorderRadius.only(
+                                      topLeft: const Radius.circular(20),
+                                      topRight: const Radius.circular(20),
+                                      bottomLeft: Radius.circular(
+                                        mine ? 20 : 6,
+                                      ),
+                                      bottomRight: Radius.circular(
+                                        mine ? 6 : 20,
+                                      ),
+                                    ),
                                   ),
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -423,18 +436,28 @@ class _ChatViewState extends State<_ChatView> {
                                       else
                                         Text(
                                           message.content,
-                                          style: TextStyle(
-                                            color: mine
-                                                ? colors.onPrimaryContainer
-                                                : colors.onSurface,
-                                          ),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyLarge
+                                              ?.copyWith(
+                                                height: 1.4,
+                                                color: mine
+                                                    ? colors.onPrimaryContainer
+                                                    : colors.onSurface,
+                                              ),
                                         ),
                                       const SizedBox(height: 4),
                                       Text(
                                         '${messageTime(message.displayTime)}${message.editedAt != null && !message.deleted ? ' · Edited' : ''}${mine ? ' · ${message.statusText}' : ''}',
                                         style: Theme.of(context)
                                             .textTheme
-                                            .labelSmall,
+                                            .labelSmall
+                                            ?.copyWith(
+                                              color: mine
+                                                  ? colors.onPrimaryContainer
+                                                        .withValues(alpha: .75)
+                                                  : colors.onSurfaceVariant,
+                                            ),
                                       ),
                                       if (message.delivery == Delivery.failed)
                                         TextButton.icon(

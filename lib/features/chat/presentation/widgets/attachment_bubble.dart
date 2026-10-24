@@ -220,7 +220,7 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
             InkWell(
               onTap: _image != null || m.isConfirmed ? _preview : null,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
                     maxWidth: 320,

@@ -186,8 +186,25 @@ class _VoiceInputState extends State<VoiceInput> with WidgetsBindingObserver {
                         decoration: InputDecoration(
                           hintText: 'Enter message...',
                           counterText: '',
+                          filled: true,
+                          fillColor: colors.surfaceContainer,
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            borderSide: BorderSide(
+                              color: colors.outlineVariant.withValues(
+                                alpha: .6,
+                              ),
+                            ),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            borderSide: BorderSide(
+                              color: colors.primary,
+                              width: 1.5,
+                            ),
+                          ),
                           border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(28),
+                            borderRadius: BorderRadius.circular(24),
                           ),
                           contentPadding: const EdgeInsets.symmetric(
                             horizontal: 16,
@@ -204,6 +221,9 @@ class _VoiceInputState extends State<VoiceInput> with WidgetsBindingObserver {
                         final typing = value.text.trim().isNotEmpty;
                         return IconButton.filled(
                           tooltip: typing ? 'Send message' : 'Start recording',
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(48, 48),
+                          ),
                           onPressed: busy
                               ? null
                               : typing

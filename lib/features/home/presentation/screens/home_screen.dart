@@ -140,7 +140,13 @@ class _RoomsViewState extends State<_RoomsView> {
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.only(
-              top: MediaQuery.paddingOf(context).top + kToolbarHeight + 16,
+              top: MediaQuery.paddingOf(context).top + kToolbarHeight + 20,
+              left: MediaQuery.sizeOf(context).width > 760
+                  ? (MediaQuery.sizeOf(context).width - 760) / 2
+                  : 0,
+              right: MediaQuery.sizeOf(context).width > 760
+                  ? (MediaQuery.sizeOf(context).width - 760) / 2
+                  : 0,
               bottom: MediaQuery.paddingOf(context).bottom + 24,
             ),
             children: [
@@ -197,10 +203,6 @@ class _RoomsViewState extends State<_RoomsView> {
                     '/conversation',
                     extra: Conversation.fromRoom(room),
                   ),
-                ),
-                const Padding(
-                  padding: EdgeInsets.only(left: 88),
-                  child: Divider(height: 1),
                 ),
               ],
               if (state.hasMore && !state.loading && state.error == null)
