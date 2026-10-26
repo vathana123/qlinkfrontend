@@ -86,7 +86,8 @@ class ChatMessage {
   final AttachmentMetadata? attachment;
   final String? sendError;
   final DateTime? localCreatedAt;
-  DateTime get displayTime => localCreatedAt ?? createdAt;
+  DateTime get displayTime =>
+      isConfirmed ? createdAt : localCreatedAt ?? createdAt;
   bool get isConfirmed =>
       delivery == Delivery.sent ||
       delivery == Delivery.delivered ||
@@ -103,6 +104,7 @@ class ChatMessage {
   ChatMessage withDelivery(
     Delivery value, {
     String? fileId,
+    bool clearFileId = false,
     double? progress,
     String? error,
     String? localPath,
@@ -125,7 +127,7 @@ class ChatMessage {
     delivery: value,
     senderDisplayName: senderDisplayName,
     type: type,
-    fileId: fileId ?? this.fileId,
+    fileId: clearFileId ? null : fileId ?? this.fileId,
     durationMs: durationMs,
     attachment: attachment ?? this.attachment,
     audioSizeBytes: audioSizeBytes,
@@ -134,6 +136,34 @@ class ChatMessage {
     sendError: error,
     localCreatedAt: localCreatedAt ?? this.localCreatedAt,
   );
+  Map<String, dynamic> toPendingJson() => {
+    'id': id,
+    'senderId': senderId,
+    'clientMessageId': clientMessageId,
+    'content': content,
+    'createdAt': createdAt.toIso8601String(),
+    'type': type,
+    'fileId': fileId,
+    'durationMs': durationMs,
+    'localPath': localPath,
+    'delivery': delivery.name,
+    'sendError': sendError,
+    'replyToId': replyToId,
+    if (reply != null)
+      'reply': {
+        'id': reply!.id,
+        'content': reply!.content,
+        'type': reply!.type,
+        'senderDisplayName': reply!.senderDisplayName,
+        'unavailable': reply!.unavailable,
+      },
+    if (attachment != null)
+      'attachment': {
+        'originalName': attachment!.originalName,
+        'contentType': attachment!.contentType,
+        'sizeBytes': attachment!.sizeBytes,
+      },
+  };
   factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
     replyToId: j['replyToId'] as String?,
     reply: j['reply'] == null
@@ -157,6 +187,11 @@ class ChatMessage {
         : AttachmentMetadata.fromJson(j['attachment'] as Map<String, dynamic>),
     audioSizeBytes: j['audioSizeBytes'] as int?,
     createdAt: DateTime.parse(j['createdAt'] as String),
+    delivery: switch (j['delivery']) {
+      'DELIVERED' => Delivery.delivered,
+      'SEEN' => Delivery.seen,
+      _ => Delivery.sent,
+    },
   );
 }
 

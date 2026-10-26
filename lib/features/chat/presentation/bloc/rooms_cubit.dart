@@ -23,12 +23,16 @@ class RoomsState {
 
 class RoomsCubit extends Cubit<RoomsState> {
   RoomsCubit(this.repository) : super(const RoomsState()) {
+    _syncRequests = repository.syncRequests.listen(
+      (_) => unawaited(synchronize()),
+    );
     _events = repository.events.listen(_received);
     _connections = repository.connections.listen((state) {
       if (state == ChatConnection.connected) unawaited(synchronize());
     });
   }
   final ChatRepository repository;
+  late final StreamSubscription<String> _syncRequests;
   late final StreamSubscription<ChatEvent> _events;
   late final StreamSubscription<ChatConnection> _connections;
   int _page = 0;
@@ -102,6 +106,7 @@ class RoomsCubit extends Cubit<RoomsState> {
     if (event.message?.hidden == true) _hiddenIds.add(event.message!.id);
     if (event.message?.hidden == true ||
         event.type == 'MESSAGE_UPDATED' ||
+        event.type == 'MESSAGE_RECEIPT' ||
         event.type == 'MESSAGE_HIDDEN') {
       if (event.room != null) {
         emit(RoomsState(items: _merge([event.room!]), hasMore: state.hasMore));
@@ -215,6 +220,7 @@ class RoomsCubit extends Cubit<RoomsState> {
 
   @override
   Future<void> close() async {
+    await _syncRequests.cancel();
     await _events.cancel();
     await _connections.cancel();
     return super.close();

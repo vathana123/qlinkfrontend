@@ -7,6 +7,7 @@ import '../models/app_user.dart';
 
 class AuthRepository {
   AuthRepository(this.dio, this.storage, this.oauth);
+  Future<void> Function()? beforeSignOut;
   final Dio dio;
   final TokenStorage storage;
   final OAuthProvider oauth;
@@ -56,6 +57,9 @@ class AuthRepository {
   /// Null means remote revocation succeeded. Otherwise local sign-out only.
   Future<String?> signOut() async {
     String? warning;
+    try {
+      await beforeSignOut?.call();
+    } catch (_) {}
     try {
       await dio.post<dynamic>(ApiEndpoints.signOut);
     } catch (_) {

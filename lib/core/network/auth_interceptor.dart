@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 
@@ -42,6 +43,37 @@ class AuthInterceptor extends Interceptor {
         final refreshing = _refreshing;
         if (refreshing != null) await refreshing;
         final tokens = await _storage.read();
+        final expected = options.extra['expectedAccountId'];
+        if (expected != null) {
+          String? subject;
+          try {
+            subject =
+                (jsonDecode(
+                      utf8.decode(
+                        base64Url.decode(
+                          base64Url.normalize(
+                            tokens!.accessToken.split('.')[1],
+                          ),
+                        ),
+                      ),
+                    ) as Map)['sub']
+                    as String?;
+          } catch (_) {}
+          final sessionAccount = _dio.options.extra['authenticatedAccountId'];
+          if ((subject != null && subject != expected) ||
+              (subject == null && sessionAccount != expected)) {
+            handler.reject(
+              DioException(
+                requestOptions: options,
+                type: DioExceptionType.cancel,
+                error: const AppException(
+                  'Account changed. Pending message retained.',
+                ),
+              ),
+            );
+            return;
+          }
+        }
         if (tokens != null) {
           options.headers['Authorization'] = 'Bearer ${tokens.accessToken}';
           _expired = false;

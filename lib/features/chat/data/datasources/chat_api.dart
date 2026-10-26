@@ -15,16 +15,37 @@ class ChatApi {
           cancelToken: cancelToken,
         )).data,
       );
+  Future<String?> findUpload(
+    String key,
+    String account,
+    CancelToken cancel,
+  ) async {
+    try {
+      final response = await dio.get<dynamic>(
+        '/api/v1/storage/files/uploads/$key',
+        options: Options(extra: {'expectedAccountId': account}),
+        cancelToken: cancel,
+      );
+      return ApiEndpoints.data(response.data)['id'] as String?;
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
   Future<String> uploadAttachment(
     String path,
     String name,
     String mime,
     void Function(int, int) progress, {
     CancelToken? cancelToken,
+    String? uploadKey,
+    String? expectedAccountId,
   }) async {
     final response = await dio.post<dynamic>(
       '/api/v1/storage/files',
       data: FormData.fromMap({
+        'uploadKey': ?uploadKey,
         'file': await MultipartFile.fromFile(
           path,
           filename: name,
@@ -32,6 +53,7 @@ class ChatApi {
         ),
       }),
       onSendProgress: progress,
+      options: Options(extra: {'expectedAccountId': ?expectedAccountId}),
       cancelToken: cancelToken,
     );
     return ApiEndpoints.data(response.data)['id'] as String;
@@ -41,15 +63,21 @@ class ChatApi {
     String path,
     void Function(int, int) progress, {
     CancelToken? cancelToken,
+    String? uploadKey,
+    String? expectedAccountId,
   }) async {
     final response = await dio.post<dynamic>(
       '/api/v1/storage/files',
       data: FormData.fromMap({
         'category': 'AUDIO',
         'voice': 'true',
+        'uploadKey': ?uploadKey,
         'file': await MultipartFile.fromFile(path, filename: 'voice.wav'),
       }),
-      options: Options(contentType: 'multipart/form-data'),
+      options: Options(
+        contentType: 'multipart/form-data',
+        extra: {'expectedAccountId': ?expectedAccountId},
+      ),
       onSendProgress: progress,
       cancelToken: cancelToken,
     );
@@ -66,10 +94,12 @@ class ChatApi {
     String path,
     Map<String, dynamic> body, {
     CancelToken? cancelToken,
+    String? expectedAccountId,
   }) async => ApiEndpoints.data(
     (await dio.post<dynamic>(
       '/api/v1/$path',
       data: body,
+      options: Options(extra: {'expectedAccountId': ?expectedAccountId}),
       cancelToken: cancelToken,
     )).data,
   );

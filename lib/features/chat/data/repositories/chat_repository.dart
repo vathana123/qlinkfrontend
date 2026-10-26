@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 
 import '../datasources/chat_api.dart';
 import 'outgoing_queue.dart';
+import 'outbox_store.dart';
 import '../realtime/chat_event.dart';
 import '../realtime/chat_realtime.dart';
 import '../models/chat_models.dart';
@@ -12,16 +14,149 @@ class ChatRepository {
   ChatRepository(
     this.api, {
     ChatRealtime? realtime,
+    OutboxStore? outboxStore,
     Stream<ChatEvent>? events,
     Stream<ChatConnection>? connections,
-  }) : events = events ?? realtime?.events ?? const Stream.empty(),
-       connections = connections ?? realtime?.states ?? const Stream.empty();
+  }) : outboxStore = outboxStore ?? MemoryOutboxStore(),
+       events = events ?? realtime?.events ?? const Stream.empty(),
+       connections = connections ?? realtime?.states ?? const Stream.empty() {
+    _deliveryEvents = this.events.listen((event) {
+      final m = event.message;
+      if (m != null && event.type != 'MESSAGE_RECEIPT') {
+        acknowledge(event.roomId, [m]);
+      }
+    });
+  }
   final Stream<ChatEvent> events;
   final Stream<ChatConnection> connections;
+  final _syncRequests = StreamController<String>.broadcast();
+  Stream<String> get syncRequests => _syncRequests.stream;
+  void requestSynchronization(String room) {
+    _syncRequests.add(room);
+  }
+
+  void acknowledgeId(String room, String id) {
+    if (_account == null) return;
+    if (_acknowledged['$room:$id'] == true) return;
+    _receipts.putIfAbsent(room, () => {}).putIfAbsent(id, () => false);
+    _receiptRetry ??= Timer(const Duration(milliseconds: 150), _flushReceipts);
+  }
+
+  Future<ChatRoom> roomById(String id) async =>
+      ChatRoom.fromJson(await api.get('chat/rooms/$id'));
   final ChatApi api;
+  final OutboxStore outboxStore;
   late final outbox = OutgoingQueue(this);
-  void setAccount(String? account) => outbox.setAccount(account);
-  Future<void> dispose() => outbox.dispose();
+  late final StreamSubscription<ChatEvent> _deliveryEvents;
+  String? _account;
+  int _receiptGeneration = 0, _receiptFailures = 0;
+  bool _receiptBusy = false;
+  Timer? _receiptRetry;
+  CancelToken _receiptCancel = CancelToken();
+  final _receipts = <String, Map<String, bool>>{};
+  final _acknowledged = <String, bool>{};
+  void setAccount(String? account) {
+    api.dio.options.extra['authenticatedAccountId'] = account;
+    if (_account != account) {
+      _receiptGeneration++;
+      _receiptCancel.cancel('Account changed');
+      _receiptCancel = CancelToken();
+      _receiptRetry?.cancel();
+      _receiptRetry = null;
+      _receipts.clear();
+      _acknowledged.clear();
+      _account = account;
+    }
+    outbox.setAccount(account);
+  }
+
+  void acknowledge(
+    String room,
+    Iterable<ChatMessage> messages, {
+    bool seen = false,
+  }) {
+    if (_account == null) return;
+    for (final m in messages) {
+      if (!m.isConfirmed || m.senderId == _account || m.hidden || m.deleted) {
+        continue;
+      }
+      final key = '$room:${m.id}';
+      if (_acknowledged[key] == true ||
+          (!seen && _acknowledged.containsKey(key))) {
+        continue;
+      }
+      final pending = _receipts.putIfAbsent(room, () => {});
+      pending[m.id] = seen || (pending[m.id] ?? false);
+    }
+    _receiptRetry ??= Timer(const Duration(milliseconds: 150), _flushReceipts);
+  }
+
+  Future<void> _flushReceipts() async {
+    _receiptRetry = null;
+    if (_receiptBusy || _account == null || _receipts.isEmpty) return;
+    _receiptBusy = true;
+    final generation = _receiptGeneration;
+    final account = _account;
+    try {
+      final room = _receipts.keys.first;
+      final pending = _receipts[room]!;
+      final seen = pending.values.first;
+      final ids = pending.entries
+          .where((e) => e.value == seen)
+          .take(50)
+          .map((e) => e.key)
+          .toList();
+      try {
+        await api.dio.post<dynamic>(
+          '/api/v1/chat/rooms/$room/receipts',
+          data: {'messageIds': ids, 'seen': seen},
+          options: Options(extra: {'expectedAccountId': account}),
+          cancelToken: _receiptCancel,
+        );
+        if (generation != _receiptGeneration) return;
+        for (final id in ids) {
+          _acknowledged['$room:$id'] = seen;
+          if (pending[id] == seen) pending.remove(id);
+        }
+        if (pending.isEmpty) _receipts.remove(room);
+        if (_acknowledged.length > 5000) {
+          _acknowledged.remove(_acknowledged.keys.first);
+        }
+        _receiptFailures = 0;
+      } on DioException catch (e) {
+        if (generation != _receiptGeneration) return;
+        if ([400, 403, 404].contains(e.response?.statusCode)) {
+          for (final id in ids) {
+            pending.remove(id);
+          }
+          if (pending.isEmpty) _receipts.remove(room);
+        } else {
+          _receiptFailures++;
+        }
+      }
+    } finally {
+      _receiptBusy = false;
+      if (_account != null && _receipts.isNotEmpty) {
+        _receiptRetry = Timer(
+          Duration(
+            seconds: _receiptFailures == 0
+                ? 0
+                : 1 << _receiptFailures.clamp(1, 6),
+          ),
+          _flushReceipts,
+        );
+      }
+    }
+  }
+
+  Future<void> dispose() async {
+    setAccount(null);
+    _receiptRetry?.cancel();
+    _receiptCancel.cancel();
+    await _deliveryEvents.cancel();
+    await _syncRequests.close();
+    await outbox.dispose();
+  }
 
   Future<Uint8List> imageBytes(String fileId, CancelToken cancel) async {
     final response = await api.dio.get<List<int>>(
@@ -133,12 +268,39 @@ class ChatRepository {
       'size': 30,
       'cursor': ?cursor,
     });
-    return MessagePage(
-      (j['items'] as List)
-          .map((v) => ChatMessage.fromJson(v as Map<String, dynamic>))
-          .toList(),
-      j['nextCursor'] as String?,
-    );
+    final messages = (j['items'] as List)
+        .map((v) => ChatMessage.fromJson(v as Map<String, dynamic>))
+        .toList();
+    acknowledge(room, messages);
+    return MessagePage(messages, j['nextCursor'] as String?);
+  }
+
+  Future<SendResult?> committed(
+    String key,
+    String account,
+    CancelToken cancel,
+  ) async {
+    try {
+      final r = await api.dio.get<dynamic>(
+        '/api/v1/chat/messages/client/$key',
+        options: Options(extra: {'expectedAccountId': account}),
+        cancelToken: cancel,
+      );
+      final j = Map<String, dynamic>.from(r.data['data'] as Map);
+      if (j['message'] == null || j['room'] == null) return null;
+      return SendResult(
+        ChatRoom.fromJson(Map<String, dynamic>.from(j['room'] as Map)),
+        ChatMessage.fromJson(Map<String, dynamic>.from(j['message'] as Map)),
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 404) {
+        final body = e.response?.data;
+        final details = body is Map ? body['data'] : null;
+        if (details is Map && details['code'] == 'ROOM_NOT_FOUND') rethrow;
+        return null;
+      }
+      rethrow;
+    }
   }
 
   Future<ChatMessage> editMessage(
@@ -176,6 +338,7 @@ class ChatRepository {
     required String content,
     String? fileId,
     String? replyToId,
+    String? expectedAccountId,
     int? durationMs,
     String type = 'VOICE',
     CancelToken? cancelToken,
@@ -194,6 +357,7 @@ class ChatRepository {
         },
       },
       cancelToken: cancelToken,
+      expectedAccountId: expectedAccountId,
     );
     return SendResult(
       ChatRoom.fromJson(j['room'] as Map<String, dynamic>),

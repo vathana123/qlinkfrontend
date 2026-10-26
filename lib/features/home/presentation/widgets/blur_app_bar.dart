@@ -36,6 +36,7 @@ class BlurAppBar extends StatelessWidget implements PreferredSizeWidget {
 
       flexibleSpace: ClipRect(
         child: BackdropFilter(
+          // blendMode: BlendMode.,
           filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
           child: ColoredBox(
             color: scheme.surface.withValues(alpha: 0.78),

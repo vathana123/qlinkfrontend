@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "707160715912",
+    "project_id": "qlink-b1257",
+    "storage_bucket": "qlink-b1257.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:707160715912:android:4a120c26aa6b71052f653d",
+        "android_client_info": {
+          "package_name": "com.example.qlinkfrontend"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFDaX7jbd_hcSV79r97bnZsWOFXcJwHiQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

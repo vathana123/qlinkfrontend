@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 
@@ -16,6 +17,13 @@ import 'package:qlinkfrontend/features/chat/presentation/bloc/chat_cubit.dart';
 
 import 'support/fakes.dart';
 
+final _serverTimes = <String, DateTime>{};
+var _serverSequence = 0;
+DateTime serverTime(String key) => _serverTimes.putIfAbsent(
+  key,
+  () => DateTime.utc(2026).add(Duration(microseconds: ++_serverSequence)),
+);
+
 const conversation = Conversation(PublicUser('recipient', 'Alex'));
 
 ChatMessage saved(ChatMessage draft) => ChatMessage(
@@ -23,7 +31,7 @@ ChatMessage saved(ChatMessage draft) => ChatMessage(
   senderId: draft.senderId,
   clientMessageId: draft.clientMessageId,
   content: draft.content,
-  createdAt: DateTime.utc(2026),
+  createdAt: serverTime(draft.clientMessageId),
   type: draft.type,
   fileId: draft.fileId,
   attachment: draft.attachment,
@@ -44,7 +52,8 @@ ResponseBody accepted(RequestOptions request) {
         'content': body['content'],
         'type': body['type'] ?? 'TEXT',
         'fileId': body['fileId'],
-        'createdAt': '2026-01-01T00:00:00Z',
+        'createdAt': serverTime(body['clientMessageId'] as String)
+            .toIso8601String(),
       },
     }),
   );
@@ -187,7 +196,10 @@ void main() {
         events.add(event);
         expect(chat.state.messages, hasLength(1));
         expect(chat.state.messages.single.delivery, Delivery.sent);
-        expect(chat.state.messages.single.displayTime, draft.createdAt);
+        expect(
+          chat.state.messages.single.displayTime,
+          serverTime(draft.clientMessageId),
+        );
         await chat.close();
         await repo.dispose();
         await events.close();
@@ -371,5 +383,39 @@ void main() {
       ),
       contains('Connection timeout'),
     );
+  });
+
+  test('pending account cannot use another account access token', () async {
+    final storage = MemoryTokens()
+      ..tokens = TokenPair(
+        'header.${base64Url.encode(utf8.encode(jsonEncode({'sub': 'bob'})))}.signature',
+        'refresh',
+      );
+    final client = DioClient(storage);
+    final adapter = FakeAdapter((r) => accepted(r));
+    client.dio.httpClientAdapter = adapter;
+    final repo = ChatRepository(ChatApi(client.dio));
+    repo.setAccount('alice');
+    final pending = ChatMessage(
+      id: 'key',
+      senderId: 'alice',
+      clientMessageId: 'key',
+      content: 'private draft',
+      createdAt: DateTime.now(),
+      delivery: Delivery.sending,
+    );
+    expect(
+      await repo.outbox.enqueue(
+        const Conversation(PublicUser('recipient', 'Recipient')),
+        pending,
+      ),
+      isFalse,
+    );
+    expect(adapter.requests, isEmpty);
+    expect(
+      repo.outbox.messages('alice:person:recipient').single.delivery,
+      Delivery.failed,
+    );
+    await repo.dispose();
   });
 }

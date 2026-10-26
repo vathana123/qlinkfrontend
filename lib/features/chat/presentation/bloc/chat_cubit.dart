@@ -1,3 +1,5 @@
+import '../../data/datasources/attachment_picker.dart';
+
 import 'dart:async';
 import 'dart:io';
 
@@ -62,16 +64,23 @@ class ChatCubit extends Cubit<ChatState> {
         );
       }
     });
+    _syncRequests = repository.syncRequests.listen((room) {
+      if (room == state.roomId) unawaited(synchronize());
+    });
     _events = repository.events.listen(_received);
     _connections = repository.connections.listen((connection) {
       if (connection == ChatConnection.connected) unawaited(synchronize());
     });
   }
+  late final StreamSubscription<String> _syncRequests;
   late final StreamSubscription<ChatEvent> _events;
   late final StreamSubscription<OutgoingUpdate> _outgoing;
   late final StreamSubscription<String> _revokedRooms;
   late final StreamSubscription<ChatConnection> _connections;
   bool _syncing = false, _syncAgain = false;
+  String? _catchupCursor;
+  ChatMessage? _catchupOldest;
+  Timer? _catchupTimer;
   void _received(ChatEvent event) {
     final draftMatch =
         state.roomId == null &&
@@ -81,6 +90,9 @@ class ChatCubit extends Cubit<ChatState> {
     if (event.type == 'GROUP_REMOVED') {
       repository.outbox.revokeRoom(event.roomId);
       _accessGeneration++;
+      _catchupCursor = null;
+      _catchupOldest = null;
+      _catchupTimer?.cancel();
       _update(
         removed: true,
         messages: [],
@@ -90,6 +102,9 @@ class ChatCubit extends Cubit<ChatState> {
     }
     if (event.type == 'GROUP_UPDATED') {
       _accessGeneration++;
+      _catchupCursor = null;
+      _catchupOldest = null;
+      _catchupTimer?.cancel();
       _update(group: event.room, removed: false);
       unawaited(synchronize());
       return;
@@ -101,6 +116,8 @@ class ChatCubit extends Cubit<ChatState> {
 
   @override
   Future<void> close() async {
+    _catchupTimer?.cancel();
+    await _syncRequests.cancel();
     await _events.cancel();
     await _outgoing.cancel();
     await _revokedRooms.cancel();
@@ -171,6 +188,9 @@ class ChatCubit extends Cubit<ChatState> {
         [403, 404].contains(e.response?.statusCode)) {
       if (state.roomId != null) repository.outbox.revokeRoom(state.roomId!);
       _accessGeneration++;
+      _catchupCursor = null;
+      _catchupOldest = null;
+      _catchupTimer?.cancel();
       _update(removed: true, messages: [], loading: false, error: chatError(e));
     } else {
       _update(loading: false, error: chatError(e));
@@ -326,9 +346,11 @@ class ChatCubit extends Cubit<ChatState> {
         final order = a.createdAt.compareTo(b.createdAt);
         return order != 0 ? order : a.id.compareTo(b.id);
       });
-      final oldest = persisted.firstOrNull;
+      final oldest = _catchupOldest ?? persisted.firstOrNull;
       final hadHistory = _loaded;
-      String? cursor;
+      String? cursor = _catchupCursor;
+      var pages = 0;
+      var reached = false;
       final seen = <String>{};
       do {
         final page = await repository.history(state.roomId!, cursor: cursor);
@@ -339,17 +361,33 @@ class ChatCubit extends Cubit<ChatState> {
           repository.outbox.confirm(message, state.roomId!);
         }
         _update(messages: _merge(page.items));
+        pages++;
         cursor = page.cursor;
-        if (oldest != null &&
-            page.items.any(
-              (m) =>
-                  m.createdAt.isBefore(oldest.createdAt) ||
-                  (m.createdAt == oldest.createdAt &&
-                      m.id.compareTo(oldest.id) <= 0),
-            )) {
+        if (oldest == null) {
+          reached = true;
           break;
         }
-      } while (cursor != null && seen.add(cursor));
+        if (page.items.any(
+          (m) =>
+              m.createdAt.isBefore(oldest.createdAt) ||
+              (m.createdAt == oldest.createdAt &&
+                  m.id.compareTo(oldest.id) <= 0),
+        )) {
+          reached = true;
+          break;
+        }
+      } while (cursor != null && seen.add(cursor) && pages < 10);
+      if (!reached && cursor != null) {
+        _catchupCursor = cursor;
+        _catchupOldest = oldest;
+        _catchupTimer?.cancel();
+        _catchupTimer = Timer(const Duration(milliseconds: 250), () {
+          if (!isClosed) unawaited(synchronize());
+        });
+      } else {
+        _catchupCursor = null;
+        _catchupOldest = null;
+      }
       _loaded = true;
       // Keep the user's older-history cursor when catching up at the head.
       if (!hadHistory) _update(cursor: cursor, setCursor: true);
@@ -418,6 +456,7 @@ class ChatCubit extends Cubit<ChatState> {
     AttachmentMetadata metadata, {
     PrepareAttachment? prepare,
     bool ownsFile = true,
+    AttachmentSource? preparationSource,
   }) async {
     if (!state.canSend) {
       if (ownsFile) {
@@ -444,7 +483,28 @@ class ChatCubit extends Cubit<ChatState> {
     );
     replyTo = null;
     _update(messages: _merge([message]));
-    return _transmit(message, prepare: prepare, ownsFile: ownsFile);
+    return _transmit(
+      message,
+      prepare: prepare,
+      ownsFile: ownsFile,
+      preparationSource: preparationSource,
+    );
+  }
+
+  Future<void> discard(ChatMessage message) async {
+    if (message.isConfirmed) return;
+    await repository.outbox.discard(message);
+    if (!isClosed) {
+      _update(
+        messages: state.messages
+            .where(
+              (m) =>
+                  !(m.senderId == message.senderId &&
+                      m.clientMessageId == message.clientMessageId),
+            )
+            .toList(),
+      );
+    }
   }
 
   Future<bool> retry(ChatMessage message) async {
@@ -458,6 +518,7 @@ class ChatCubit extends Cubit<ChatState> {
     ChatMessage message, {
     PrepareAttachment? prepare,
     bool ownsFile = true,
+    AttachmentSource? preparationSource,
   }) => repository.outbox.enqueue(
     conversation.isGroup
         ? conversation
@@ -465,5 +526,6 @@ class ChatCubit extends Cubit<ChatState> {
     message,
     prepare: prepare,
     ownsFile: ownsFile,
+    preparationSource: preparationSource,
   );
 }
