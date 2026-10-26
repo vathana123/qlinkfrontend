@@ -55,6 +55,7 @@ class AttachmentCubit extends Cubit<AttachmentSelection> {
             file.path,
             metadata,
             ownsFile: false,
+            preparationSource: source,
             prepare: (cancel) async {
               final policy = await api.uploadPolicy(cancelToken: cancel);
               if (cancel.isCancelled) throw cancel.cancelError!;

@@ -582,8 +582,8 @@ void main() {
       );
       expect(chat.state.messages.map((m) => m.id), [
         'upload',
-        'saved-text',
         'received-text',
+        'saved-text',
         'saved-photo',
       ]);
       final list = tester.widget<ListView>(find.byType(ListView));

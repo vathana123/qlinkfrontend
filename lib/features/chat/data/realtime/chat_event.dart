@@ -23,6 +23,7 @@ class ChatEvent {
           !{
             'MESSAGE_CREATED',
             'MESSAGE_UPDATED',
+            'MESSAGE_RECEIPT',
             'MESSAGE_HIDDEN',
             'GROUP_UPDATED',
             'GROUP_REMOVED',

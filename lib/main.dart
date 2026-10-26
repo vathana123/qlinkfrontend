@@ -1,3 +1,6 @@
+import 'features/push/push_client.dart';
+import 'features/chat/data/repositories/outbox_store.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -24,6 +27,8 @@ Future<void> main() async {
   client.auth.onSessionExpired = () => auth.add(const AuthSessionExpired());
   runApp(
     QLinkApp(
+      outboxStore: SecureOutboxStore(),
+      pushClient: FirebasePushClient(),
       auth: auth,
       theme: ThemeCubit(preferences),
       realtime: ChatRealtime(

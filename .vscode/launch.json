@@ -2,6 +2,17 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "qLink Development (FCM)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define-from-file=env/development.json",
+        "--dart-define=QLINK_FCM_ENABLED=true"
+      ]
+    },
+    {
       "name": "qLink Development",
       "request": "launch",
       "type": "dart",
@@ -19,6 +30,35 @@
       "toolArgs": [
         "--dart-define-from-file=config/google.android.json"
       ]
+    },
+    {
+      "name": "qLink Physical Android (USB)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define-from-file=env/development.json",
+        "--dart-define=API_BASE_URL=http://127.0.0.1:8080"
+      ]
+    },
+    {
+      "name": "qLink Physical Android (Wi-Fi)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "flutterMode": "debug",
+      "toolArgs": [
+        "--dart-define-from-file=env/development.json",
+        "--dart-define=API_BASE_URL=http://${input:backendHost}:8080"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "backendHost",
+      "type": "promptString",
+      "description": "Computer Wi-Fi IPv4 address (host only, from ipconfig)"
     }
   ]
 }

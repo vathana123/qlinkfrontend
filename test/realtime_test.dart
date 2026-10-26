@@ -327,43 +327,46 @@ void main() {
     },
   );
 
-  test(
-    'server access revocation clears pending group messages and queue',
-    () async {
-      final adapter = FakeAdapter(
-        (_) => response({
-          'success': false,
-          'message': 'Active room membership required',
-          'data': {'code': 'ROOM_ACCESS_DENIED', 'fields': {}},
-        }, status: 403),
-      );
-      final repository = ChatRepository(
-        ChatApi(Dio()..httpClientAdapter = adapter),
-      );
-      final conversation = Conversation.fromRoom(
-        const ChatRoom(
-          'group',
-          null,
-          type: 'GROUP_PRIVATE',
-          name: 'Friends',
-          memberCount: 2,
-          myRole: 'MEMBER',
-        ),
-      );
-      final chat = ChatCubit(repository, conversation, 'alice');
-      expect(await chat.send('pending message'), isFalse);
-      expect(chat.state.removed, isTrue);
-      expect(chat.state.messages, isEmpty);
-      expect(
-        repository.outbox.messages(
-          OutgoingQueue.conversationKey('alice', conversation),
-        ),
-        isEmpty,
-      );
-      await chat.close();
-      await repository.dispose();
-    },
-  );
+  test('server access revocation hides chat but retains drafts until explicit discard', () async {
+    final adapter = FakeAdapter(
+      (_) => response({
+        'success': false,
+        'message': 'Active room membership required',
+        'data': {'code': 'ROOM_ACCESS_DENIED', 'fields': {}},
+      }, status: 403),
+    );
+    final repository = ChatRepository(
+      ChatApi(Dio()..httpClientAdapter = adapter),
+    );
+    final conversation = Conversation.fromRoom(
+      const ChatRoom(
+        'group',
+        null,
+        type: 'GROUP_PRIVATE',
+        name: 'Friends',
+        memberCount: 2,
+        myRole: 'MEMBER',
+      ),
+    );
+    final chat = ChatCubit(repository, conversation, 'alice');
+    expect(await chat.send('pending message'), isFalse);
+    expect(chat.state.removed, isTrue);
+    expect(chat.state.messages, isEmpty);
+    final retained = repository.outbox.messages(
+      OutgoingQueue.conversationKey('alice', conversation),
+    );
+    expect(retained, hasLength(1));
+    expect(retained.single.delivery, Delivery.failed);
+    await repository.outbox.discard(retained.single);
+    expect(
+      repository.outbox.messages(
+        OutgoingQueue.conversationKey('alice', conversation),
+      ),
+      isEmpty,
+    );
+    await chat.close();
+    await repository.dispose();
+  });
 
   test(
     'unsupported types and missing or malformed media metadata are rejected',
@@ -1077,6 +1080,51 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpAndSettle();
+    },
+  );
+
+  test(
+    'reconnect catch-up yields after ten pages and resumes without gaps',
+    () async {
+      var catchingUp = false, calls = 0;
+      final adapter = FakeAdapter((r) {
+        if (!catchingUp) {
+          return response(
+            envelope({
+              'items': [msg('old', minute: 1)],
+              'nextCursor': null,
+            }),
+          );
+        }
+        final page = int.parse(r.queryParameters['cursor'] as String? ?? '0');
+        calls++;
+        return response(
+          envelope({
+            'items': [
+              page == 15
+                  ? msg('old', minute: 1)
+                  : msg('new$page', minute: 100 - page),
+            ],
+            'nextCursor': page == 15 ? null : '${page + 1}',
+          }),
+        );
+      });
+      final repo = ChatRepository(ChatApi(Dio()..httpClientAdapter = adapter));
+      final chat = ChatCubit(
+        repo,
+        const Conversation(PublicUser('bob', 'Bob'), roomId: 'room'),
+        'alice',
+      );
+      await chat.load();
+      catchingUp = true;
+      await chat.synchronize();
+      expect(calls, 10);
+      await until(() => calls == 16);
+      expect(chat.state.messages, hasLength(16));
+      expect(chat.state.messages.first.id, 'new0');
+      expect(chat.state.messages.last.id, 'old');
+      await chat.close();
+      await repo.dispose();
     },
   );
 }

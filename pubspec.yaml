@@ -53,6 +53,8 @@ dependencies:
   file_selector: ^1.0.3
   image: ^4.10.1
   open_file: ^4.0.0
+  firebase_core: ^4.0.0
+  firebase_messaging: ^16.7.0
 
 dev_dependencies:
   flutter_test:

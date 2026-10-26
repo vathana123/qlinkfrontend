@@ -1,3 +1,5 @@
+import '../../data/datasources/chat_api.dart';
+
 import 'dart:async';
 
 import 'package:go_router/go_router.dart';
@@ -49,16 +51,109 @@ class _ChatView extends StatefulWidget {
   State<_ChatView> createState() => _ChatViewState();
 }
 
-class _ChatViewState extends State<_ChatView> {
+class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
+  Timer? _seenTimer;
+  String? _settingsRoom;
+  bool _notificationsMuted = false;
+  Future<void> _loadNotificationSettings() async {
+    final cubit = context.read<ChatCubit>(),
+        room = context.read<ChatCubit>().state.roomId;
+    if (room == null || room == _settingsRoom) return;
+    _settingsRoom = room;
+    try {
+      final settings = await cubit.repository.api.get(
+        'chat/rooms/$room/notifications',
+      );
+      if (mounted) {
+        setState(() => _notificationsMuted = settings['muted'] == true);
+      }
+    } catch (_) {
+      _settingsRoom = null;
+    }
+  }
+
+  Future<void> _toggleNotifications() async {
+    final cubit = context.read<ChatCubit>(),
+        room = context.read<ChatCubit>().state.roomId;
+    if (room == null) return;
+    try {
+      await cubit.repository.api.dio.put<dynamic>(
+        '/api/v1/chat/rooms/$room/notifications',
+        data: {'muted': !_notificationsMuted},
+      );
+      if (mounted) setState(() => _notificationsMuted = !_notificationsMuted);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(chatError(e))));
+      }
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scroll.addListener(_scheduleSeen);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_loadNotificationSettings());
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _scheduleSeen();
+      unawaited(context.read<ChatCubit>().synchronize());
+    }
+  }
+
+  void _scheduleSeen() {
+    _seenTimer?.cancel();
+    _seenTimer = Timer(const Duration(milliseconds: 180), () {
+      if (!mounted ||
+          ModalRoute.of(context)?.isCurrent != true ||
+          (WidgetsBinding.instance.lifecycleState != null &&
+              WidgetsBinding.instance.lifecycleState !=
+                  AppLifecycleState.resumed)) {
+        return;
+      }
+      final cubit = context.read<ChatCubit>();
+      final viewport = _listKey.currentContext?.findRenderObject();
+      if (viewport is! RenderBox || !viewport.attached || !viewport.hasSize) {
+        return;
+      }
+      final viewportTop = viewport.localToGlobal(Offset.zero).dy;
+      final appBarBottom = MediaQuery.paddingOf(context).top + kToolbarHeight;
+      final visibleTop = viewportTop > appBarBottom
+          ? viewportTop
+          : appBarBottom;
+      final visibleBottom = viewportTop + viewport.size.height;
+      final visible = cubit.state.messages.where((m) {
+        final box = _messageKeys[m.id]?.currentContext?.findRenderObject();
+        if (box is! RenderBox || !box.attached || !box.hasSize) return false;
+        final top = box.localToGlobal(Offset.zero).dy;
+        return top < visibleBottom && top + box.size.height > visibleTop;
+      });
+      if (cubit.state.roomId != null) {
+        cubit.repository.acknowledge(cubit.state.roomId!, visible, seen: true);
+      }
+    });
+  }
+
   ChatMessage? _editing;
   String _draft = '';
   bool _saving = false;
   String? _highlight;
   final _messageKeys = <String, GlobalKey>{};
+  final _listKey = GlobalKey();
   final _text = TextEditingController();
   final _scroll = ScrollController();
   @override
   void dispose() {
+    _seenTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _scroll.removeListener(_scheduleSeen);
     _text.dispose();
     _scroll.dispose();
     super.dispose();
@@ -73,7 +168,34 @@ class _ChatViewState extends State<_ChatView> {
   }
 
   Future<void> _actions(ChatMessage message) async {
-    if (!message.isConfirmed) return;
+    if (!message.isConfirmed) {
+      final cubit = context.read<ChatCubit>();
+      final action = await showModalBottomSheet<String>(
+        context: context,
+        builder: (context) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (message.delivery == Delivery.failed)
+                ListTile(
+                  leading: const Icon(Icons.refresh),
+                  title: const Text('Retry'),
+                  onTap: () => Navigator.pop(context, 'retry'),
+                ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Discard pending message'),
+                onTap: () => Navigator.pop(context, 'discard'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (action == 'retry') unawaited(cubit.retry(message));
+      if (action == 'discard') await cubit.discard(message);
+      return;
+    }
     final cubit = context.read<ChatCubit>();
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -250,6 +372,18 @@ class _ChatViewState extends State<_ChatView> {
               radius: 18,
             ),
           const SizedBox(width: 16),
+          if (chat.roomId != null && !chat.removed)
+            IconButton(
+              tooltip: _notificationsMuted
+                  ? 'Unmute conversation'
+                  : 'Mute conversation',
+              onPressed: _toggleNotifications,
+              icon: Icon(
+                _notificationsMuted
+                    ? Icons.notifications_off_outlined
+                    : Icons.notifications_outlined,
+              ),
+            ),
           IconButton(
             tooltip: 'Refresh messages',
             onPressed: () => context.read<ChatCubit>().synchronize(),
@@ -264,6 +398,10 @@ class _ChatViewState extends State<_ChatView> {
               previous.messages != current.messages ||
               previous.removed != current.removed,
           listener: (context, state) {
+            unawaited(_loadNotificationSettings());
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _scheduleSeen();
+            });
             if (_editing != null &&
                 (state.removed ||
                     !state.messages.any(
@@ -322,6 +460,7 @@ class _ChatViewState extends State<_ChatView> {
                                 ),
                         )
                       : ListView.builder(
+                          key: _listKey,
                           controller: _scroll,
                           reverse: true,
                           padding: EdgeInsets.only(
@@ -381,7 +520,8 @@ class _ChatViewState extends State<_ChatView> {
                                         ),
                                   constraints: BoxConstraints(
                                     maxWidth:
-                                        MediaQuery.sizeOf(context).width * .8,
+                                        (MediaQuery.sizeOf(context).width * .82)
+                                            .clamp(0.0, 560.0),
                                   ),
                                   decoration: BoxDecoration(
                                     border: message.id == _highlight
@@ -389,11 +529,23 @@ class _ChatViewState extends State<_ChatView> {
                                             color: colors.primary,
                                             width: 2,
                                           )
-                                        : null,
+                                        : Border.all(
+                                            color: colors.outlineVariant
+                                                .withValues(alpha: .35),
+                                          ),
                                     color: mine
                                         ? colors.primaryContainer
-                                        : colors.surfaceContainerHigh,
-                                    borderRadius: BorderRadius.circular(18),
+                                        : colors.surfaceContainer,
+                                    borderRadius: BorderRadius.only(
+                                      topLeft: const Radius.circular(20),
+                                      topRight: const Radius.circular(20),
+                                      bottomLeft: Radius.circular(
+                                        mine ? 20 : 6,
+                                      ),
+                                      bottomRight: Radius.circular(
+                                        mine ? 6 : 20,
+                                      ),
+                                    ),
                                   ),
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -423,18 +575,28 @@ class _ChatViewState extends State<_ChatView> {
                                       else
                                         Text(
                                           message.content,
-                                          style: TextStyle(
-                                            color: mine
-                                                ? colors.onPrimaryContainer
-                                                : colors.onSurface,
-                                          ),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyLarge
+                                              ?.copyWith(
+                                                height: 1.4,
+                                                color: mine
+                                                    ? colors.onPrimaryContainer
+                                                    : colors.onSurface,
+                                              ),
                                         ),
                                       const SizedBox(height: 4),
                                       Text(
                                         '${messageTime(message.displayTime)}${message.editedAt != null && !message.deleted ? ' · Edited' : ''}${mine ? ' · ${message.statusText}' : ''}',
                                         style: Theme.of(context)
                                             .textTheme
-                                            .labelSmall,
+                                            .labelSmall
+                                            ?.copyWith(
+                                              color: mine
+                                                  ? colors.onPrimaryContainer
+                                                        .withValues(alpha: .75)
+                                                  : colors.onSurfaceVariant,
+                                            ),
                                       ),
                                       if (message.delivery == Delivery.failed)
                                         TextButton.icon(

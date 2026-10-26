@@ -1,4 +1,10 @@
+import '../features/chat/data/models/chat_models.dart';
+import '../features/push/push_client.dart';
+import '../features/push/push_session.dart';
+
 import 'dart:async';
+
+import '../features/chat/data/repositories/outbox_store.dart';
 
 import 'package:flutter/material.dart';
 
@@ -22,30 +28,57 @@ class QLinkApp extends StatefulWidget {
     required this.auth,
     required this.theme,
     this.realtime,
+    this.outboxStore,
+    this.pushClient,
   });
   final AuthBloc auth;
   final ThemeCubit theme;
   final ChatRealtime? realtime;
+  final OutboxStore? outboxStore;
+  final PushClient? pushClient;
   @override
   State<QLinkApp> createState() => _QLinkAppState();
 }
 
-class _QLinkAppState extends State<QLinkApp> {
+class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _chat.outbox.resume();
+      _push?.resume();
+    }
+  }
+
   late final _chat = ChatRepository(
     ChatApi(widget.auth.repository.dio),
     realtime: widget.realtime,
+    outboxStore: widget.outboxStore,
   );
   late final StreamSubscription<AuthState> _chatSession;
   late final RouterRefresh _refresh = RouterRefresh(widget.auth);
   late final GoRouter _router = createRouter(widget.auth, _refresh);
   RealtimeSession? _session;
+  PushSession? _push;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _chat.setAccount(widget.auth.state.user?.id);
     _chatSession = widget.auth.stream.listen(
       (state) => _chat.setAccount(state.user?.id),
     );
+    if (widget.pushClient != null) {
+      _push = PushSession(widget.auth, _chat, widget.pushClient!, (
+        conversation,
+      ) {
+        final current = _router.routerDelegate.currentConfiguration.extra;
+        if (current is Conversation && current.roomId == conversation.roomId) {
+          return;
+        }
+        _router.push('/conversation', extra: conversation);
+      });
+      unawaited(_push!.start());
+    }
     if (widget.realtime != null) {
       _session = RealtimeSession(widget.auth, widget.realtime!);
     }
@@ -54,7 +87,9 @@ class _QLinkAppState extends State<QLinkApp> {
   final _messenger = GlobalKey<ScaffoldMessengerState>();
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _session?.dispose();
+    if (_push != null) unawaited(_push!.dispose());
     unawaited(_chatSession.cancel());
     unawaited(_chat.dispose());
     _router.dispose();
