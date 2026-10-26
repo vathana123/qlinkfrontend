@@ -8,6 +8,7 @@ import '../../features/chat/presentation/bloc/group_creation_cubit.dart';
 
 import '../../features/chat/data/models/chat_models.dart';
 import '../../features/chat/presentation/screens/chat_screen.dart';
+import '../../features/chat/presentation/screens/chat_search_screen.dart';
 import '../../features/chat/presentation/screens/user_search_screen.dart';
 import '../../features/chat/presentation/screens/qr_scanner_screen.dart';
 import '../../features/user/presentation/screens/my_qr_screen.dart';
@@ -73,12 +74,16 @@ GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
       builder: (_, s) => GroupInfoScreen(roomId: s.pathParameters['id']!),
     ),
     GoRoute(path: '/search', builder: (_, _) => const UserSearchScreen()),
+    GoRoute(path: '/chat-search', builder: (_, _) => const ChatSearchScreen()),
     GoRoute(path: '/scan', builder: (_, _) => const QrScannerScreen()),
     GoRoute(path: '/my-qr', builder: (_, _) => const MyQrScreen()),
     GoRoute(
       path: '/conversation',
       redirect: (_, s) => s.extra is Conversation ? null : '/chats',
-      builder: (_, s) => ChatScreen(conversation: s.extra! as Conversation),
+      builder: (_, s) => ChatScreen(
+        conversation: s.extra! as Conversation,
+        initialMessageId: s.uri.queryParameters['message'],
+      ),
     ),
     GoRoute(path: '/chats', builder: (_, _) => const HomeScreen()),
     GoRoute(path: '/profile', builder: (_, _) => const UserProfileScreen()),
