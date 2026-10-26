@@ -9,6 +9,7 @@ import 'outbox_store.dart';
 import '../realtime/chat_event.dart';
 import '../realtime/chat_realtime.dart';
 import '../models/chat_models.dart';
+import '../models/search_models.dart';
 
 class ChatRepository {
   ChatRepository(
@@ -45,6 +46,77 @@ class ChatRepository {
   Future<ChatRoom> roomById(String id) async =>
       ChatRoom.fromJson(await api.get('chat/rooms/$id'));
   final ChatApi api;
+  Future<SearchPage<T>> _search<T>(
+    String path,
+    String query,
+    T Function(Map<String, dynamic>) parse, {
+    String? cursor,
+    CancelToken? cancelToken,
+  }) async {
+    final response = await api.dio.get<dynamic>(
+      '/api/v1/$path',
+      queryParameters: {'q': query, 'size': 20, 'cursor': ?cursor},
+      cancelToken: cancelToken,
+      options: Options(extra: {'expectedAccountId': ?_account}),
+    );
+    final data = Map<String, dynamic>.from(response.data['data'] as Map);
+    return SearchPage(
+      (data['items'] as List)
+          .map((item) => parse(Map<String, dynamic>.from(item as Map)))
+          .toList(),
+      data['nextCursor'] as String?,
+    );
+  }
+
+  Future<SearchPage<ChatRoom>> searchRooms(
+    String query, {
+    String? cursor,
+    CancelToken? cancelToken,
+  }) => _search(
+    'chat/search/rooms',
+    query,
+    ChatRoom.fromJson,
+    cursor: cursor,
+    cancelToken: cancelToken,
+  );
+
+  Future<SearchPage<MessageMatch>> searchMessages(
+    String query, {
+    String? roomId,
+    String? cursor,
+    CancelToken? cancelToken,
+  }) => _search(
+    roomId == null ? 'chat/search/messages' : 'chat/rooms/$roomId/search',
+    query,
+    MessageMatch.fromJson,
+    cursor: cursor,
+    cancelToken: cancelToken,
+  );
+
+  Future<MessageContext> messageContext(String room, String message) async {
+    final data = await api.get('chat/rooms/$room/messages/$message/context');
+    final items = (data['items'] as List)
+        .map((m) => ChatMessage.fromJson(Map<String, dynamic>.from(m as Map)))
+        .toList();
+    acknowledge(room, items);
+    return MessageContext(
+      items,
+      data['nextCursor'] as String?,
+      data['newerCursor'] as String?,
+    );
+  }
+
+  Future<MessagePage> newerHistory(String room, String cursor) async {
+    final data = await api.get('chat/rooms/$room/messages/newer', {
+      'cursor': cursor,
+    });
+    final items = (data['items'] as List)
+        .map((m) => ChatMessage.fromJson(Map<String, dynamic>.from(m as Map)))
+        .toList();
+    acknowledge(room, items);
+    return MessagePage(items, data['nextCursor'] as String?);
+  }
+
   final OutboxStore outboxStore;
   late final outbox = OutgoingQueue(this);
   late final StreamSubscription<ChatEvent> _deliveryEvents;

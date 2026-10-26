@@ -13,14 +13,21 @@ import '../../../home/presentation/widgets/blur_app_bar.dart';
 import '../../data/models/chat_models.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../bloc/chat_cubit.dart';
+import '../bloc/chat_search_cubit.dart';
+import '../widgets/chat_search_panel.dart';
 import '../widgets/voice_input.dart';
 import '../widgets/attachment_button.dart';
 import '../widgets/attachment_bubble.dart';
 import '../widgets/voice_bubble.dart';
 
 class ChatScreen extends StatelessWidget {
-  const ChatScreen({super.key, required this.conversation});
+  const ChatScreen({
+    super.key,
+    required this.conversation,
+    this.initialMessageId,
+  });
   final Conversation conversation;
+  final String? initialMessageId;
   @override
   Widget build(BuildContext context) {
     final accountId = context.select((AuthBloc bloc) => bloc.state.user?.id);
@@ -34,7 +41,10 @@ class ChatScreen extends StatelessWidget {
       create: (context) =>
           ChatCubit(context.read<ChatRepository>(), conversation, accountId)
             ..load(),
-      child: _ChatView(conversation: conversation),
+      child: _ChatView(
+        conversation: conversation,
+        initialMessageId: initialMessageId,
+      ),
     );
   }
 }
@@ -45,14 +55,51 @@ Key chatMessageKey(ChatMessage message) => message.clientMessageId.isNotEmpty
     : ValueKey(('server', message.id));
 
 class _ChatView extends StatefulWidget {
-  const _ChatView({required this.conversation});
+  const _ChatView({required this.conversation, this.initialMessageId});
   final Conversation conversation;
+  final String? initialMessageId;
   @override
   State<_ChatView> createState() => _ChatViewState();
 }
 
 class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   Timer? _seenTimer;
+  Timer? _highlightTimer;
+  ChatSearchCubit? _search;
+  bool _jumping = false;
+  void _toggleSearch() {
+    if (_search != null) {
+      unawaited(_search!.close());
+      setState(() => _search = null);
+    } else {
+      final chat = context.read<ChatCubit>();
+      if (chat.state.roomId == null) return;
+      setState(
+        () => _search = ChatSearchCubit(
+          chat.repository,
+          roomId: chat.state.roomId,
+        ),
+      );
+    }
+  }
+
+  Future<void> _jumpToSearchMessage(String id) async {
+    if (_jumping) return;
+    setState(() => _jumping = true);
+    final found = await context.read<ChatCubit>().jumpToMessage(id);
+    if (!mounted) return;
+    if (found) {
+      await _scrollToMessage(id);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Message unavailable. Refresh search and try again.'),
+        ),
+      );
+    }
+    if (mounted) setState(() => _jumping = false);
+  }
+
   String? _settingsRoom;
   bool _notificationsMuted = false;
   Future<void> _loadNotificationSettings() async {
@@ -97,6 +144,9 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
     _scroll.addListener(_scheduleSeen);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_loadNotificationSettings());
+      if (mounted && widget.initialMessageId != null) {
+        unawaited(_jumpToSearchMessage(widget.initialMessageId!));
+      }
     });
   }
 
@@ -152,6 +202,8 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   @override
   void dispose() {
     _seenTimer?.cancel();
+    _highlightTimer?.cancel();
+    unawaited(_search?.close());
     WidgetsBinding.instance.removeObserver(this);
     _scroll.removeListener(_scheduleSeen);
     _text.dispose();
@@ -238,6 +290,9 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
       ),
     );
     if (!mounted || action == null) return;
+    if (_search != null && (action == 'reply' || action == 'edit')) {
+      _toggleSearch();
+    }
     if (action == 'reply') {
       if (_editing != null) _cancelEdit();
       cubit.selectReply(message);
@@ -282,14 +337,23 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
       );
       return;
     }
-    setState(() => _highlight = preview.id);
+    await _scrollToMessage(preview.id);
+  }
+
+  Future<void> _scrollToMessage(String id) async {
+    setState(() => _highlight = id);
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _highlight = null);
+    });
+    await WidgetsBinding.instance.endOfFrame;
     // Walk the lazy list by viewport so variable-height media bubbles remain accurate.
     if (!_scroll.hasClients) return;
     _scroll.jumpTo(0);
     while (mounted && _scroll.hasClients) {
       await WidgetsBinding.instance.endOfFrame;
       if (!mounted || !_scroll.hasClients) return;
-      final target = _messageKeys[preview.id]?.currentContext;
+      final target = _messageKeys[id]?.currentContext;
       if (target != null && target.mounted) {
         await Scrollable.ensureVisible(
           target,
@@ -365,6 +429,12 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
               )
             : null,
         actions: [
+          if (chat.roomId != null && !chat.removed)
+            IconButton(
+              tooltip: 'Search this conversation',
+              onPressed: _toggleSearch,
+              icon: const Icon(Icons.search),
+            ),
           if (!conversation.isGroup)
             UserAvatar(
               name: conversation.title,
@@ -398,6 +468,9 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
               previous.messages != current.messages ||
               previous.removed != current.removed,
           listener: (context, state) {
+            if (state.removed && _search != null) _toggleSearch();
+            final visibleIds = state.messages.map((m) => m.id).toSet();
+            _messageKeys.removeWhere((id, _) => !visibleIds.contains(id));
             unawaited(_loadNotificationSettings());
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) _scheduleSeen();
@@ -409,9 +482,17 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                     ))) {
               _cancelEdit();
             }
-            if (!_scroll.hasClients || _scroll.offset > 100) return;
+            if (_jumping ||
+                state.contextMessageId != null ||
+                !_scroll.hasClients ||
+                _scroll.offset > 100) {
+              return;
+            }
             WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted && _scroll.hasClients && _scroll.offset <= 100) {
+              if (mounted &&
+                  !_jumping &&
+                  _scroll.hasClients &&
+                  _scroll.offset <= 100) {
                 _scroll.animateTo(
                   0,
                   duration: const Duration(milliseconds: 180),
@@ -427,6 +508,27 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
             };
             return Column(
               children: [
+                if (_search != null && !state.removed)
+                  Padding(
+                    padding: EdgeInsets.only(
+                      top: MediaQuery.paddingOf(context).top + kToolbarHeight,
+                    ),
+                    child: SizedBox(
+                      height:
+                          ((MediaQuery.sizeOf(context).height -
+                                      MediaQuery.viewInsetsOf(context).bottom) *
+                                  .4)
+                              .clamp(150, 280),
+                      child: BlocProvider.value(
+                        value: _search!,
+                        child: ChatSearchPanel(
+                          onClose: _toggleSearch,
+                          onMessage: (match) =>
+                              _jumpToSearchMessage(match.message.id),
+                        ),
+                      ),
+                    ),
+                  ),
                 if (conversation.isGroup && conversation.memberCount != null)
                   Padding(
                     padding: const EdgeInsets.all(8),
@@ -464,10 +566,11 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                           controller: _scroll,
                           reverse: true,
                           padding: EdgeInsets.only(
-                            top:
-                                MediaQuery.paddingOf(context).top +
-                                kToolbarHeight +
-                                16,
+                            top: _search != null
+                                ? 16
+                                : MediaQuery.paddingOf(context).top +
+                                      kToolbarHeight +
+                                      16,
                             bottom: MediaQuery.paddingOf(context).bottom + 24,
                             left: 12,
                             right: 12,
@@ -632,7 +735,45 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                       ),
                     ],
                   ),
-                if (_editing != null)
+                if (state.contextMessageId != null)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (state.newerCursor != null)
+                        Expanded(
+                          child: TextButton(
+                            onPressed: state.loading || _jumping
+                                ? null
+                                : () => context.read<ChatCubit>().loadNewer(),
+                            child: const Text(
+                              'Load newer messages',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ),
+                      Expanded(
+                        child: TextButton(
+                          onPressed: state.loading || _jumping
+                              ? null
+                              : () async {
+                                  await context
+                                      .read<ChatCubit>()
+                                      .returnToLatest();
+                                  if (mounted && _scroll.hasClients) {
+                                    _scroll.jumpTo(0);
+                                  }
+                                },
+                          child: const Text(
+                            'Back to latest',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                if (_editing != null && _search == null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Column(
@@ -661,7 +802,7 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
-                if (_editing == null)
+                if (_editing == null && _search == null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
                     child: !state.canSend

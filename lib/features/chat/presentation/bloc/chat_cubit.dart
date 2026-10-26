@@ -27,8 +27,11 @@ class ChatState {
     this.sending = false,
     this.cursor,
     this.error,
+    this.contextMessageId,
+    this.newerCursor,
   });
   final String? roomId, cursor, error;
+  final String? contextMessageId, newerCursor;
   final ChatRoom? group;
   final bool removed;
   bool get canSend => !removed && (group?.canSend ?? true);
@@ -81,6 +84,8 @@ class ChatCubit extends Cubit<ChatState> {
   String? _catchupCursor;
   ChatMessage? _catchupOldest;
   Timer? _catchupTimer;
+  String? _contextMessageId, _newerCursor;
+  int _navigationGeneration = 0;
   void _received(ChatEvent event) {
     final draftMatch =
         state.roomId == null &&
@@ -105,17 +110,34 @@ class ChatCubit extends Cubit<ChatState> {
       _catchupCursor = null;
       _catchupOldest = null;
       _catchupTimer?.cancel();
-      _update(group: event.room, removed: false);
+      _update(group: event.room, removed: false, loading: false);
       unawaited(synchronize());
       return;
     }
     if (state.removed) return;
+    if (_contextMessageId != null &&
+        _newerCursor != null &&
+        !state.messages.any(
+          (m) =>
+              m.id == event.message?.id ||
+              m.clientMessageId == event.message?.clientMessageId,
+        )) {
+      // Keep this window contiguous while still invalidating quotes/hidden IDs.
+      final ids = state.messages.map((m) => m.id).toSet();
+      _update(
+        messages: _merge([event.message!])
+            .where((m) => ids.contains(m.id) || !m.isConfirmed)
+            .toList(),
+      );
+      return;
+    }
     _update(roomId: event.roomId, messages: _merge([event.message!]));
     if (draftMatch) unawaited(synchronize());
   }
 
   @override
   Future<void> close() async {
+    _navigationGeneration++;
     _catchupTimer?.cancel();
     await _syncRequests.cancel();
     await _events.cancel();
@@ -179,6 +201,150 @@ class ChatCubit extends Cubit<ChatState> {
     return false;
   }
 
+  /// Replace the visible history with a bounded contiguous window. Never walk
+  /// thousands of pages to reach an old search result.
+  Future<bool> jumpToMessage(String id) async {
+    if (isClosed || state.removed || state.roomId == null) return false;
+    final request = ++_navigationGeneration;
+    final access = ++_accessGeneration;
+    _catchupTimer?.cancel();
+    _catchupCursor = null;
+    _catchupOldest = null;
+    _syncAgain = false;
+    _update(loading: true);
+    try {
+      final window = await repository.messageContext(state.roomId!, id);
+      if (isClosed ||
+          request != _navigationGeneration ||
+          access != _accessGeneration ||
+          state.removed) {
+        return false;
+      }
+      final ids = window.items.map((m) => m.id).toSet();
+      final newest = window.items.firstOrNull;
+      final base = state.messages
+          .where(
+            (m) =>
+                !m.isConfirmed ||
+                ids.contains(m.id) ||
+                (window.newerCursor == null &&
+                    newest != null &&
+                    (m.createdAt.isAfter(newest.createdAt) ||
+                        (m.createdAt == newest.createdAt &&
+                            m.id.compareTo(newest.id) > 0))),
+          )
+          .toList();
+      _contextMessageId = id;
+      _newerCursor = window.newerCursor;
+      _loaded = true;
+      _update(
+        messages: _merge(window.items, base: base),
+        loading: false,
+        cursor: window.olderCursor,
+        setCursor: true,
+      );
+      return state.messages.any((m) => m.id == id && !m.deleted && !m.hidden);
+    } catch (e) {
+      if (!isClosed &&
+          request == _navigationGeneration &&
+          access == _accessGeneration) {
+        if (_contextMessageId == id) {
+          _update(
+            messages: state.messages.where((m) => !m.isConfirmed).toList(),
+          );
+        }
+        // A missing target is not evidence that the whole group was revoked.
+        if (e is DioException && e.response?.statusCode == 403) {
+          _failure(e);
+        } else {
+          _update(loading: false, error: chatError(e));
+        }
+      }
+      return false;
+    } finally {
+      if (!isClosed &&
+          request == _navigationGeneration &&
+          _syncAgain &&
+          !state.loading) {
+        _syncAgain = false;
+        unawaited(synchronize());
+      }
+    }
+  }
+
+  Future<void> loadNewer() async {
+    if (isClosed ||
+        state.removed ||
+        state.loading ||
+        _newerCursor == null ||
+        state.roomId == null) {
+      return;
+    }
+    final access = _accessGeneration;
+    _update(loading: true);
+    try {
+      final page = await repository.newerHistory(state.roomId!, _newerCursor!);
+      if (isClosed || access != _accessGeneration || state.removed) return;
+      _newerCursor = page.cursor;
+      _update(messages: _merge(page.items), loading: false);
+    } catch (e) {
+      if (!isClosed && access == _accessGeneration) _failure(e);
+    } finally {
+      if (!isClosed &&
+          access == _accessGeneration &&
+          _syncAgain &&
+          !state.loading) {
+        _syncAgain = false;
+        unawaited(synchronize());
+      }
+    }
+  }
+
+  Future<void> returnToLatest() async {
+    if (isClosed || state.removed || state.roomId == null) return;
+    final request = ++_navigationGeneration;
+    final access = ++_accessGeneration;
+    _update(loading: true);
+    try {
+      final page = await repository.history(state.roomId!);
+      if (isClosed ||
+          request != _navigationGeneration ||
+          access != _accessGeneration ||
+          state.removed) {
+        return;
+      }
+      _contextMessageId = null;
+      _newerCursor = null;
+      _loaded = true;
+      final ids = page.items.map((m) => m.id).toSet();
+      _update(
+        messages: _merge(
+          page.items,
+          base: state.messages
+              .where((m) => !m.isConfirmed || ids.contains(m.id))
+              .toList(),
+        ),
+        loading: false,
+        cursor: page.cursor,
+        setCursor: true,
+      );
+    } catch (e) {
+      if (!isClosed &&
+          request == _navigationGeneration &&
+          access == _accessGeneration) {
+        _failure(e);
+      }
+    } finally {
+      if (!isClosed &&
+          request == _navigationGeneration &&
+          _syncAgain &&
+          !state.loading) {
+        _syncAgain = false;
+        unawaited(synchronize());
+      }
+    }
+  }
+
   final _hiddenIds = <String>{};
   bool _loaded = false;
   int _accessGeneration = 0;
@@ -208,7 +374,13 @@ class ChatCubit extends Cubit<ChatState> {
     String? error,
   }) {
     if (isClosed) return;
-    if (removed == true) replyTo = null;
+    if (removed == true) {
+      loading = false;
+      replyTo = null;
+      _contextMessageId = null;
+      _newerCursor = null;
+      _navigationGeneration++;
+    }
     emit(
       ChatState(
         roomId: roomId ?? state.roomId,
@@ -221,12 +393,17 @@ class ChatCubit extends Cubit<ChatState> {
         ),
         cursor: setCursor ? cursor : state.cursor,
         error: error,
+        contextMessageId: _contextMessageId,
+        newerCursor: _newerCursor,
       ),
     );
   }
 
-  List<ChatMessage> _merge(Iterable<ChatMessage> incoming) {
-    final all = [...state.messages];
+  List<ChatMessage> _merge(
+    Iterable<ChatMessage> incoming, {
+    List<ChatMessage>? base,
+  }) {
+    final all = [...(base ?? state.messages)];
     final changes = incoming.toList();
     for (var m in changes) {
       if (m.hidden) _hiddenIds.add(m.id);
@@ -296,8 +473,7 @@ class ChatCubit extends Cubit<ChatState> {
         state.roomId!,
         cursor: refresh ? null : state.cursor,
       );
-      if (generation != _accessGeneration || state.removed) {
-        _update(loading: false);
+      if (isClosed || generation != _accessGeneration || state.removed) {
         return;
       }
       _loaded = true;
@@ -311,7 +487,7 @@ class ChatCubit extends Cubit<ChatState> {
         setCursor: true,
       );
     } catch (e) {
-      _failure(e);
+      if (generation == _accessGeneration) _failure(e);
     } finally {
       if (_syncAgain && !isClosed) {
         _syncAgain = false;
@@ -326,16 +502,20 @@ class ChatCubit extends Cubit<ChatState> {
       _syncAgain = true;
       return;
     }
+    if (_contextMessageId != null) {
+      await jumpToMessage(_contextMessageId!);
+      return;
+    }
     _syncing = true;
+    final generation = _accessGeneration;
     try {
       if (state.roomId == null && conversation.recipient != null) {
         final found = await repository.conversation(conversation.recipient!);
-        if (isClosed) return;
+        if (isClosed || generation != _accessGeneration) return;
         if (found.roomId == null) return;
         _update(roomId: found.roomId);
       }
       if (state.roomId == null) return;
-      final generation = _accessGeneration;
       if (conversation.isGroup) {
         final group = await repository.group(state.roomId!);
         if (generation != _accessGeneration || isClosed) return;
@@ -392,7 +572,7 @@ class ChatCubit extends Cubit<ChatState> {
       // Keep the user's older-history cursor when catching up at the head.
       if (!hadHistory) _update(cursor: cursor, setCursor: true);
     } catch (e) {
-      _failure(e);
+      if (generation == _accessGeneration) _failure(e);
     } finally {
       _syncing = false;
       if (_syncAgain && !isClosed) {

@@ -107,9 +107,14 @@ class _RoomsViewState extends State<_RoomsView> {
       ),
       actions: [
         IconButton(
+          tooltip: 'Search chats',
+          onPressed: () => _navigate('/chat-search'),
+          icon: const Icon(Icons.search_rounded),
+        ),
+        IconButton(
           tooltip: 'Search users',
           onPressed: () => _navigate('/search'),
-          icon: const Icon(Icons.search_rounded),
+          icon: const Icon(Icons.person_search_outlined),
         ),
         IconButton(
           tooltip: 'Scan QR code',
