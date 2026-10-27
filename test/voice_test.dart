@@ -12,6 +12,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:qlinkfrontend/features/chat/data/datasources/chat_api.dart';
 import 'package:qlinkfrontend/features/chat/data/models/chat_models.dart';
 import 'package:qlinkfrontend/features/chat/data/repositories/chat_repository.dart';
+import 'package:qlinkfrontend/features/chat/data/repositories/private_media_cache.dart';
 import 'package:qlinkfrontend/features/chat/presentation/bloc/chat_cubit.dart';
 import 'package:qlinkfrontend/features/chat/presentation/bloc/voice_recorder_cubit.dart';
 import 'package:qlinkfrontend/features/chat/presentation/widgets/voice_input.dart';
@@ -19,6 +20,7 @@ import 'package:qlinkfrontend/features/chat/presentation/widgets/voice_bubble.da
 import 'package:qlinkfrontend/features/chat/presentation/screens/chat_screen.dart';
 
 import 'support/fakes.dart';
+import 'support/media.dart';
 
 class FakeRecorder implements VoiceRecorder {
   bool permission = true, disposed = false;
@@ -68,8 +70,12 @@ class ComposerChatCubit extends ChatCubit {
 }
 
 class FakePlayer extends AudioPlayer {
+  FakePlayer({this.length = const Duration(seconds: 1)});
+  final Duration length;
   bool active = false, released = false;
   int loads = 0, stops = 0;
+  AudioSource? source;
+  Duration? sourcePosition;
   final updates = StreamController<PlayerState>.broadcast();
   final positions = StreamController<Duration>.broadcast();
   @override
@@ -89,7 +95,9 @@ class FakePlayer extends AudioPlayer {
     Duration? initialPosition,
   }) async {
     loads++;
-    return const Duration(seconds: 1);
+    source = audioSource;
+    sourcePosition = initialPosition;
+    return length;
   }
 
   @override
@@ -311,10 +319,14 @@ void main() {
       expect(recorder.state.phase, RecordingPhase.recording);
       expect(find.byType(TextField), findsNothing);
       expect(find.byTooltip('Send voice message'), findsOneWidget);
-      expect(find.byWidgetPredicate((widget) =>
-          widget is Text &&
-          widget.semanticsLabel?.startsWith('Recording duration ') == true),
-          findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Text &&
+              widget.semanticsLabel?.startsWith('Recording duration ') == true,
+        ),
+        findsOneWidget,
+      );
       await tester.tap(find.byTooltip('Cancel recording'));
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -362,10 +374,14 @@ void main() {
     });
     await tester.pump(const Duration(milliseconds: 100));
     expect(recorder.state.elapsedMs, greaterThanOrEqualTo(1000));
-    expect(find.byWidgetPredicate((widget) =>
-        widget is Text &&
-        widget.semanticsLabel?.startsWith('Recording duration ') == true),
-        findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Text &&
+            widget.semanticsLabel?.startsWith('Recording duration ') == true,
+      ),
+      findsOneWidget,
+    );
     await tester.tap(find.byTooltip('Send voice message'));
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -382,10 +398,18 @@ void main() {
     text.dispose();
   });
   testWidgets(
-    'voice bubbles render, pause/resume, stop the previous player and dispose',
+    'voice bubbles share a player, pause/resume and release with the account session',
     (tester) async {
-      final a = FakePlayer(), b = FakePlayer();
-      final repo = ChatRepository(ChatApi(Dio()));
+      final a = FakePlayer();
+      final repo = ChatRepository(
+        ChatApi(
+          Dio()
+            ..httpClientAdapter = FakeAdapter(
+              (_) => ResponseBody.fromBytes([1, 2, 3], 200),
+            ),
+        ),
+        mediaDirectory: () async => temporary,
+      )..setAccount('me');
       ChatMessage message(String id) => ChatMessage(
         id: id,
         senderId: 'other',
@@ -404,7 +428,7 @@ void main() {
               body: Column(
                 children: [
                   VoiceBubble(message: message('a'), createPlayer: () => a),
-                  VoiceBubble(message: message('b'), createPlayer: () => b),
+                  VoiceBubble(message: message('b'), createPlayer: () => a),
                 ],
               ),
             ),
@@ -413,6 +437,7 @@ void main() {
       );
       expect(find.text('0:01'), findsNWidgets(2));
       await tester.tap(find.byTooltip('Play voice message').first);
+      await pumpMedia(tester, () => repo.voicePlayback.forFile('a').playing);
       await tester.pumpAndSettle();
       expect(a.active, isTrue);
       await tester.tap(find.byTooltip('Pause voice message'));
@@ -422,21 +447,29 @@ void main() {
       await tester.pumpAndSettle();
       expect(a.loads, 1);
       await tester.tap(find.byTooltip('Play voice message'));
+      await pumpMedia(tester, () => repo.voicePlayback.forFile('b').playing);
       await tester.pumpAndSettle();
-      expect(a.active, isFalse);
-      expect(b.active, isTrue);
+      expect(repo.voicePlayback.forFile('a').playing, isFalse);
+      expect(repo.voicePlayback.forFile('b').playing, isTrue);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
+      expect(a.released, isFalse);
+      await runMediaTask(tester, repo.dispose);
       expect(a.released, isTrue);
-      expect(b.released, isTrue);
     },
   );
   testWidgets(
-    'playing voice survives row movement and scrolling, then stops on lifecycle and disposal',
+    'playing and paused voice survive disposed rows, then pause on lifecycle and release with the repository',
     (tester) async {
-      final player = FakePlayer();
+      final player = FakePlayer(length: const Duration(seconds: 10));
       final scroll = ScrollController();
-      final repo = ChatRepository(ChatApi(Dio()));
+      final adapter = FakeAdapter(
+        (_) => ResponseBody.fromBytes([1, 2, 3], 200),
+      );
+      final repo = ChatRepository(
+        ChatApi(Dio()..httpClientAdapter = adapter),
+        mediaDirectory: () async => temporary,
+      )..setAccount('me');
       ChatMessage voice(String id) => ChatMessage(
         id: id,
         senderId: 'other',
@@ -485,10 +518,14 @@ void main() {
 
       await show();
       await tester.tap(find.byTooltip('Play voice message'));
+      await pumpMedia(
+        tester,
+        () => repo.voicePlayback.forFile('voice-file').playing,
+      );
       await tester.pumpAndSettle();
       player.positions.add(const Duration(seconds: 3));
       await tester.pump();
-      final original = tester.state(find.byType(VoiceBubble));
+      final original = tester.element(find.byType(VoiceBubble));
       messages = [
         ChatMessage(
           id: 'text',
@@ -500,7 +537,7 @@ void main() {
         voice('server-id'),
       ];
       await show();
-      expect(tester.state(find.byType(VoiceBubble)), same(original));
+      expect(tester.element(find.byType(VoiceBubble)), same(original));
       expect(player.active, isTrue);
       expect(player.loads, 1);
       expect(
@@ -526,50 +563,66 @@ void main() {
       await show();
       scroll.jumpTo(scroll.position.maxScrollExtent);
       await tester.pumpAndSettle();
-      expect(original.mounted, isTrue);
+      expect(original.mounted, isFalse);
       expect(player.active, isTrue);
       expect(player.released, isFalse);
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      expect(player.loads, 1);
+      expect(adapter.requests, hasLength(1));
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byType(LinearProgressIndicator),
+            )
+            .value,
+        .3,
+      );
+      await tester.tap(find.byTooltip('Pause voice message'));
+      await tester.pumpAndSettle();
+      scroll.jumpTo(scroll.position.maxScrollExtent);
+      await tester.pumpAndSettle();
+      scroll.jumpTo(0);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Play voice message'));
+      await tester.pumpAndSettle();
+      expect(player.loads, 1);
+      expect(adapter.requests, hasLength(1));
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       await tester.pumpAndSettle();
       expect(player.active, isFalse);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
+      await runMediaTask(tester, repo.dispose);
       expect(player.released, isTrue);
       scroll.dispose();
     },
   );
 
-  test('playback streams only requested bytes through Dio', () async {
-    final adapter = FakeAdapter(
-      (r) => ResponseBody(
-        Stream.value(Uint8List.fromList([0, 1, 2, 3, 4, 5])),
-        200,
-        headers: {
-          'content-length': ['6'],
-        },
-      ),
-    );
-    final dio = Dio()..httpClientAdapter = adapter;
-    final message = ChatMessage(
-      id: 'id',
-      senderId: 'other',
-      clientMessageId: 'key',
-      content: '',
-      createdAt: DateTime.now(),
-      type: 'VOICE',
-      fileId: 'audio',
-    );
-    final token = CancelToken();
-    final source = VoiceAudioSource(dio, message, token);
-    final result = await source.request(2, 5);
-    expect(await result.stream.expand((v) => v).toList(), [2, 3, 4]);
-    expect(result.contentLength, 3);
-    expect(
-      adapter.requests.single.path,
-      '/api/v1/storage/files/audio/download',
-    );
-    token.cancel();
-    expect(token.isCancelled, isTrue);
-  });
+  test(
+    'cached voice file serves byte ranges without additional Dio downloads',
+    () async {
+      final adapter = FakeAdapter(
+        (r) => ResponseBody(
+          Stream.value(Uint8List.fromList([0, 1, 2, 3, 4, 5])),
+          200,
+          headers: {
+            'content-length': ['6'],
+          },
+        ),
+      );
+      final dio = Dio()..httpClientAdapter = adapter;
+      final cache = PrivateMediaCache(dio, directory: () async => temporary)
+        ..setAccount('me');
+      final file = await cache.file('audio');
+      expect(await file.openRead(2, 5).expand((v) => v).toList(), [2, 3, 4]);
+      expect((await cache.file('audio')).path, file.path);
+      expect(
+        adapter.requests.single.path,
+        '/api/v1/storage/files/audio/download',
+      );
+      await cache.dispose();
+    },
+  );
 }

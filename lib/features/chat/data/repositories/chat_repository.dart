@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 
 import '../datasources/chat_api.dart';
 import 'outgoing_queue.dart';
 import 'outbox_store.dart';
+import 'private_media_cache.dart';
+import 'voice_playback_controller.dart';
 import '../realtime/chat_event.dart';
 import '../realtime/chat_realtime.dart';
 import '../models/chat_models.dart';
@@ -18,9 +21,21 @@ class ChatRepository {
     OutboxStore? outboxStore,
     Stream<ChatEvent>? events,
     Stream<ChatConnection>? connections,
+    Future<Directory> Function()? mediaDirectory,
   }) : outboxStore = outboxStore ?? MemoryOutboxStore(),
        events = events ?? realtime?.events ?? const Stream.empty(),
        connections = connections ?? realtime?.states ?? const Stream.empty() {
+    media = PrivateMediaCache(api.dio, directory: mediaDirectory);
+    _mediaEvents = this.events.listen((event) {
+      if (event.type == 'GROUP_REMOVED') media.invalidateRoom(event.roomId);
+      final message = event.message;
+      if (message != null && (message.hidden || message.deleted)) {
+        media.invalidateMessage(message.id);
+      }
+    });
+    _mediaConnections = this.connections.listen((connection) {
+      if (connection == ChatConnection.connected) media.clear();
+    });
     _deliveryEvents = this.events.listen((event) {
       final m = event.message;
       if (m != null && event.type != 'MESSAGE_RECEIPT') {
@@ -46,6 +61,13 @@ class ChatRepository {
   Future<ChatRoom> roomById(String id) async =>
       ChatRoom.fromJson(await api.get('chat/rooms/$id'));
   final ChatApi api;
+  late final PrivateMediaCache media;
+  VoicePlaybackController? _voicePlayback;
+  VoicePlaybackController get voicePlayback =>
+      _voicePlayback ??= VoicePlaybackController(media);
+  void pauseVoiceForRoom(String? roomId) => _voicePlayback?.pauseRoom(roomId);
+  late final StreamSubscription<ChatEvent> _mediaEvents;
+  late final StreamSubscription<ChatConnection> _mediaConnections;
   Future<SearchPage<T>> _search<T>(
     String path,
     String query,
@@ -98,6 +120,7 @@ class ChatRepository {
     final items = (data['items'] as List)
         .map((m) => ChatMessage.fromJson(Map<String, dynamic>.from(m as Map)))
         .toList();
+    _observeMedia(items);
     acknowledge(room, items);
     return MessageContext(
       items,
@@ -113,6 +136,7 @@ class ChatRepository {
     final items = (data['items'] as List)
         .map((m) => ChatMessage.fromJson(Map<String, dynamic>.from(m as Map)))
         .toList();
+    _observeMedia(items);
     acknowledge(room, items);
     return MessagePage(items, data['nextCursor'] as String?);
   }
@@ -138,8 +162,17 @@ class ChatRepository {
       _receipts.clear();
       _acknowledged.clear();
       _account = account;
+      media.setAccount(account);
     }
     outbox.setAccount(account);
+  }
+
+  void _observeMedia(Iterable<ChatMessage> messages) {
+    for (final message in messages) {
+      if (message.hidden || message.deleted) {
+        media.invalidateMessage(message.id);
+      }
+    }
   }
 
   void acknowledge(
@@ -226,17 +259,18 @@ class ChatRepository {
     _receiptRetry?.cancel();
     _receiptCancel.cancel();
     await _deliveryEvents.cancel();
+    await _mediaEvents.cancel();
+    await _mediaConnections.cancel();
+    await _voicePlayback?.close();
+    await media.dispose();
     await _syncRequests.close();
     await outbox.dispose();
   }
 
   Future<Uint8List> imageBytes(String fileId, CancelToken cancel) async {
-    final response = await api.dio.get<List<int>>(
-      '/api/v1/storage/files/$fileId/download',
-      options: Options(responseType: ResponseType.bytes),
-      cancelToken: cancel,
-    );
-    return Uint8List.fromList(response.data!);
+    final photo = await media.photo(fileId);
+    if (cancel.isCancelled) throw cancel.cancelError!;
+    return photo.bytes;
   }
 
   Future<void> downloadFile(
@@ -343,6 +377,7 @@ class ChatRepository {
     final messages = (j['items'] as List)
         .map((v) => ChatMessage.fromJson(v as Map<String, dynamic>))
         .toList();
+    _observeMedia(messages);
     acknowledge(room, messages);
     return MessagePage(messages, j['nextCursor'] as String?);
   }
@@ -398,6 +433,7 @@ class ChatRepository {
       '/api/v1/chat/rooms/$room/messages/${message.id}',
       queryParameters: {'everyone': everyone},
     );
+    media.invalidateMessage(message.id);
     return ChatMessage.fromJson(
       Map<String, dynamic>.from(response.data['data'] as Map),
     );

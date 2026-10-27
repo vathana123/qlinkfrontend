@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../../data/models/chat_models.dart';
 import '../../data/repositories/chat_repository.dart';
+import '../../data/repositories/private_media_cache.dart';
 
 String readableFileSize(int bytes) => bytes < 1024
     ? '$bytes B'
@@ -17,14 +18,18 @@ String readableFileSize(int bytes) => bytes < 1024
     : '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 
 class AttachmentBubble extends StatefulWidget {
-  const AttachmentBubble({super.key, required this.message});
+  const AttachmentBubble({super.key, required this.message, this.roomId});
   final ChatMessage message;
+  final String? roomId;
   @override
   State<AttachmentBubble> createState() => _AttachmentBubbleState();
 }
 
 class _AttachmentBubbleState extends State<AttachmentBubble> {
-  Uint8List? _image;
+  CachedPhoto? _image;
+  PrivateMediaCache? _media;
+  String? _account;
+  StreamSubscription<String?>? _cacheChanges;
   String? _error;
   bool _loading = false;
   var _cancel = CancelToken();
@@ -32,7 +37,56 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (widget.message.type != 'IMAGE') return;
+    final media = context.read<ChatRepository>().media;
+    if (_media != media) {
+      if (_media != null) {
+        _generation++;
+        _cancel.cancel();
+        _cancel = CancelToken();
+        _image = null;
+        _error = null;
+        _loading = false;
+      }
+      unawaited(_cacheChanges?.cancel());
+      _media = media;
+      _account = media.account;
+      _cacheChanges = media.changes.listen((id) {
+        if (!mounted || id != null && id != widget.message.fileId) return;
+        _generation++;
+        _cancel.cancel();
+        _cancel = CancelToken();
+        setState(() {
+          _image = null;
+          _loading = false;
+          _error = id == null ? null : 'Image unavailable. Tap to retry.';
+        });
+        if (id == null && media.account == _account) {
+          scheduleMicrotask(() {
+            if (mounted) _ensureImage();
+          });
+        }
+      });
+    }
+    _track();
+    _image ??= widget.message.fileId == null
+        ? null
+        : media.peekPhoto(widget.message.fileId!);
     _ensureImage();
+  }
+
+  void _track() {
+    final id = widget.message.fileId;
+    if (id != null) _media?.track(id, widget.message.id, widget.roomId);
+  }
+
+  void _seedPreview() {
+    final id = widget.message.fileId;
+    if (id != null &&
+        _image != null &&
+        widget.message.senderId == _media?.account) {
+      unawaited(_media!.seedPhoto(id, _image!.bytes).catchError((Object _) {}));
+    }
   }
 
   @override
@@ -59,6 +113,8 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
       _error = null;
       _loading = false;
     }
+    _track();
+    if (old.fileId == null && next.fileId != null) _seedPreview();
     _ensureImage();
   }
 
@@ -74,7 +130,8 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
 
   Future<void> _loadImage() async {
     if (_loading) return;
-    final repository = context.read<ChatRepository>();
+    _track();
+    final media = context.read<ChatRepository>().media;
     final generation = _generation;
     bool current() => mounted && generation == _generation;
     setState(() {
@@ -84,11 +141,14 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
     try {
       // Retain the sender's preview bytes before the send flow deletes its file.
       final localPath = widget.message.localPath;
-      if (localPath != null) {
+      if (localPath != null && widget.message.senderId == media.account) {
         try {
-          final bytes = await File(localPath).readAsBytes();
+          final image = await CachedPhoto.decode(
+            await File(localPath).readAsBytes(),
+          );
           if (!current()) return;
-          setState(() => _image = bytes);
+          setState(() => _image = image);
+          _seedPreview();
           return;
         } catch (_) {
           if (!current()) return;
@@ -100,12 +160,9 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
           widget.message.fileId == null) {
         return;
       }
-      final bytes = await repository.imageBytes(
-        widget.message.fileId!,
-        _cancel,
-      );
+      final image = await media.photo(widget.message.fileId!);
       if (current()) {
-        setState(() => _image = bytes);
+        setState(() => _image = image);
       }
     } catch (_) {
       if (current()) {
@@ -156,19 +213,37 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
       _loadImage();
       return;
     }
-    final bytes = _image!;
+    final image = _image!;
+    final media = _media!;
+    final generation = media.generation;
+    final id = widget.message.fileId;
+    var unavailable = false;
+    final title = widget.message.attachment?.originalName ?? 'Image';
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (context) => Scaffold(
-          appBar: AppBar(
-            title: Text(widget.message.attachment?.originalName ?? 'Image'),
-          ),
-          body: Center(
-            child: InteractiveViewer(
-              minScale: .5,
-              maxScale: 5,
-              child: Image.memory(bytes, fit: BoxFit.contain),
-            ),
+          appBar: AppBar(title: Text(title)),
+          body: StreamBuilder<String?>(
+            stream: media.changes,
+            builder: (context, snapshot) {
+              if (snapshot.data != null && snapshot.data == id) {
+                unavailable = true;
+              }
+              if (generation != media.generation || unavailable) {
+                return const Center(child: Text('Image unavailable.'));
+              }
+              return Center(
+                child: InteractiveViewer(
+                  minScale: .5,
+                  maxScale: 5,
+                  child: Image(
+                    image: image.preview,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, _, _) => const Text('Image unavailable.'),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -201,12 +276,14 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
   void dispose() {
     _generation++;
     _cancel.cancel();
+    unawaited(_cacheChanges?.cancel());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final m = widget.message;
+    if (m.hidden || m.deleted) return const Text('Attachment unavailable');
     final metadata = m.attachment;
     final colors = Theme.of(context).colorScheme;
     final image = m.type == 'IMAGE';
@@ -227,20 +304,44 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
                     maxHeight: 360,
                   ),
                   child: _image != null
-                      ? Image.memory(
-                          _image!,
-                          fit: BoxFit.contain,
-                          cacheWidth: 640,
-                          errorBuilder: (_, _, _) =>
-                              const Text('Image preview unavailable'),
+                      ? AspectRatio(
+                          aspectRatio: _image!.aspectRatio,
+                          child: Image(
+                            image: _image!.thumbnail,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, _, _) => TextButton(
+                              onPressed: () {
+                                if (m.fileId != null) {
+                                  _media?.invalidate(m.fileId!);
+                                }
+                                _image = null;
+                                _loadImage();
+                              },
+                              child: const Text(
+                                'Image preview unavailable. Tap to retry.',
+                              ),
+                            ),
+                          ),
                         )
-                      : m.localPath != null
-                      ? Image.file(
-                          File(m.localPath!),
+                      : m.localPath != null && m.senderId == _media?.account
+                      ? Image(
+                          image: ResizeImage(
+                            FileImage(File(m.localPath!)),
+                            width: 640,
+                            height: 720,
+                            policy: ResizeImagePolicy.fit,
+                          ),
                           fit: BoxFit.contain,
-                          cacheWidth: 640,
                           errorBuilder: (_, _, _) =>
                               const Icon(Icons.image_not_supported_outlined),
+                        )
+                      : m.fileId != null &&
+                            _media?.cachedAspectRatio(m.fileId!) != null
+                      ? AspectRatio(
+                          aspectRatio: _media!.cachedAspectRatio(m.fileId!)!,
+                          child: const Center(
+                            child: Icon(Icons.image_outlined),
+                          ),
                         )
                       : SizedBox(
                           height: 120,
