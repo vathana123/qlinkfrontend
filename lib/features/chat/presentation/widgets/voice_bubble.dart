@@ -1,8 +1,3 @@
-// StreamAudioSource is the package-supported adapter for authenticated Dio streaming.
-// ignore_for_file: experimental_member_use
-import 'dart:async';
-
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:just_audio/just_audio.dart';
@@ -10,226 +5,78 @@ import 'package:just_audio/just_audio.dart';
 import '../../data/models/chat_models.dart';
 import '../../data/repositories/chat_repository.dart';
 
-/// All bytes pass through the existing authenticated Dio instance, including refresh.
-/// The storage endpoint streams the file; satisfy player ranges without buffering it.
-class VoiceAudioSource extends StreamAudioSource {
-  VoiceAudioSource(this.dio, this.message, this.cancelToken);
-  final Dio dio;
-  final ChatMessage message;
-  final CancelToken cancelToken;
-  @override
-  Future<StreamAudioResponse> request([int? start, int? end]) async {
-    final response = await dio.get<ResponseBody>(
-      '/api/v1/storage/files/${message.fileId}/download',
-      options: Options(responseType: ResponseType.stream),
-      cancelToken: cancelToken,
-    );
-    final length = int.parse(response.headers.value('content-length')!);
-    final from = (start ?? 0).clamp(0, length);
-    final to = (end ?? length).clamp(from, length);
-    return StreamAudioResponse(
-      sourceLength: length,
-      contentLength: to - from,
-      offset: from,
-      contentType: 'audio/wav',
-      stream: _slice(response.data!.stream, from, to),
-    );
-  }
-
-  Stream<List<int>> _slice(Stream<List<int>> input, int start, int end) async* {
-    var offset = 0;
-    await for (final chunk in input) {
-      final next = offset + chunk.length;
-      if (next > start && offset < end) {
-        yield chunk.sublist(
-          (start - offset).clamp(0, chunk.length),
-          (end - offset).clamp(0, chunk.length),
-        );
-      }
-      offset = next;
-      if (offset >= end) break;
-    }
-  }
-}
-
-class VoiceBubble extends StatefulWidget {
-  const VoiceBubble({super.key, required this.message, this.createPlayer});
+class VoiceBubble extends StatelessWidget {
+  const VoiceBubble({
+    super.key,
+    required this.message,
+    this.roomId,
+    this.createPlayer,
+  });
   final AudioPlayer Function()? createPlayer;
   final ChatMessage message;
-  @override
-  State<VoiceBubble> createState() => _VoiceBubbleState();
-}
-
-class _VoiceBubbleState extends State<VoiceBubble>
-    with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
-  static _VoiceBubbleState? _active;
-  late final _player = widget.createPlayer?.call() ?? AudioPlayer();
-  CancelToken? _cancel;
-  StreamSubscription<PlayerState>? _subscription;
-  StreamSubscription<PlayerException>? _errors;
-  bool _loading = false, _loaded = false;
-  String? _error;
-  int _generation = 0;
-  @override
-  bool get wantKeepAlive =>
-      _loading ||
-      (_player.playing && _player.processingState != ProcessingState.completed);
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _errors = _player.errorStream.listen((_) {
-      if (mounted) {
-        setState(() {
-          _loaded = false;
-          _loading = false;
-          _error = 'Audio unavailable. Tap to retry.';
-        });
-        updateKeepAlive();
-      }
-    });
-    _subscription = _player.playerStateStream.listen((_) {
-      if (mounted) {
-        setState(() {});
-        updateKeepAlive();
-      }
-    });
-  }
-
-  Future<void> _stop() async {
-    _generation++;
-    _loaded = false;
-    _cancel?.cancel();
-    await _player.stop();
-    if (mounted) {
-      setState(() => _loading = false);
-      updateKeepAlive();
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant VoiceBubble oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.message.fileId != widget.message.fileId &&
-        (_loaded || _loading)) {
-      unawaited(_stop());
-    }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) unawaited(_stop());
-  }
-
-  Future<void> _toggle() async {
-    if (_player.playing) {
-      await _player.pause();
-      return;
-    }
-    final previous = _active;
-    _active = this;
-    if (previous != null && previous != this) await previous._stop();
-    if (!mounted || _active != this) return;
-    final generation = ++_generation;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    updateKeepAlive();
-    try {
-      if (!_loaded) {
-        _cancel?.cancel();
-        _cancel = CancelToken();
-        await _player.setAudioSource(
-          VoiceAudioSource(
-            context.read<ChatRepository>().api.dio,
-            widget.message,
-            _cancel!,
-          ),
-        );
-        if (!mounted || generation != _generation || _active != this) return;
-        _loaded = true;
-      }
-      if (_player.processingState == ProcessingState.completed) {
-        await _player.seek(Duration.zero);
-      }
-      if (!mounted || generation != _generation || _active != this) return;
-      setState(() => _loading = false);
-      await _player.play();
-    } catch (_) {
-      if (mounted && generation == _generation) {
-        setState(() {
-          _loaded = false;
-          _loading = false;
-          _error = 'Audio unavailable. Tap to retry.';
-        });
-        updateKeepAlive();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    if (_active == this) _active = null;
-    _generation++;
-    _cancel?.cancel();
-    unawaited(_subscription?.cancel());
-    unawaited(_errors?.cancel());
-    unawaited(_player.dispose());
-    super.dispose();
-  }
+  final String? roomId;
 
   @override
   Widget build(BuildContext context) {
-    super.build(context);
-    final m = widget.message;
-    final seconds = ((m.durationMs ?? 0) / 1000).ceil();
-    return SizedBox(
-      width: 220,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
+    final playback = context.read<ChatRepository>().voicePlayback;
+    return ListenableBuilder(
+      listenable: playback,
+      builder: (context, _) {
+        final state = playback.forFile(message.fileId);
+        final duration = state.duration > Duration.zero
+            ? state.duration.inMilliseconds
+            : message.durationMs ?? 0;
+        final seconds = (duration / 1000).ceil();
+        return SizedBox(
+          width: 220,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              IconButton(
-                tooltip: _player.playing
-                    ? 'Pause voice message'
-                    : 'Play voice message',
-                onPressed: !m.isConfirmed || _loading ? null : _toggle,
-                icon: _loading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(_player.playing ? Icons.pause : Icons.play_arrow),
-              ),
-              if (m.isConfirmed)
-                Expanded(
-                  child: StreamBuilder<Duration>(
-                    stream: _player.positionStream,
-                    builder: (context, snapshot) => LinearProgressIndicator(
-                      value:
-                          ((snapshot.data?.inMilliseconds ?? 0) /
-                                  (m.durationMs ?? 1))
-                              .clamp(0.0, 1.0),
-                    ),
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: state.playing
+                        ? 'Pause voice message'
+                        : 'Play voice message',
+                    onPressed: !message.isConfirmed || state.loading
+                        ? null
+                        : () => playback.toggle(
+                            message,
+                            roomId: roomId,
+                            createPlayer: createPlayer,
+                          ),
+                    icon: state.loading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(state.playing ? Icons.pause : Icons.play_arrow),
                   ),
-                ),
-              const SizedBox(width: 8),
-              Text(
-                '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}',
+                  if (message.isConfirmed)
+                    Expanded(
+                      child: LinearProgressIndicator(
+                        value:
+                            (state.position.inMilliseconds /
+                                    (duration > 0 ? duration : 1))
+                                .clamp(0, 1),
+                      ),
+                    ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}',
+                  ),
+                ],
               ),
+              if (state.error != null)
+                Text(
+                  state.error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
             ],
           ),
-          if (_error != null)
-            Text(
-              _error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

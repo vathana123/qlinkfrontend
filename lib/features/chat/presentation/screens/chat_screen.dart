@@ -63,6 +63,7 @@ class _ChatView extends StatefulWidget {
 }
 
 class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
+  late final ChatRepository _mediaRepository;
   Timer? _seenTimer;
   Timer? _highlightTimer;
   ChatSearchCubit? _search;
@@ -140,6 +141,7 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _mediaRepository = context.read<ChatRepository>();
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_scheduleSeen);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -201,6 +203,7 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   final _scroll = ScrollController();
   @override
   void dispose() {
+    _mediaRepository.pauseVoiceForRoom(widget.conversation.roomId);
     _seenTimer?.cancel();
     _highlightTimer?.cancel();
     unawaited(_search?.close());
@@ -454,11 +457,11 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                     : Icons.notifications_outlined,
               ),
             ),
-          IconButton(
-            tooltip: 'Refresh messages',
-            onPressed: () => context.read<ChatCubit>().synchronize(),
-            icon: const Icon(Icons.refresh),
-          ),
+          // IconButton(
+          //   tooltip: 'Refresh messages',
+          //   onPressed: () => context.read<ChatCubit>().synchronize(),
+          //   icon: const Icon(Icons.refresh),
+          // ),
         ],
       ),
       body: SafeArea(
@@ -672,9 +675,15 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                                           ),
                                         )
                                       else if (message.isVoice)
-                                        VoiceBubble(message: message)
+                                        VoiceBubble(
+                                          message: message,
+                                          roomId: state.roomId,
+                                        )
                                       else if (message.isAttachment)
-                                        AttachmentBubble(message: message)
+                                        AttachmentBubble(
+                                          message: message,
+                                          roomId: state.roomId,
+                                        )
                                       else
                                         Text(
                                           message.content,

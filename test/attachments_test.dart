@@ -18,6 +18,7 @@ import 'package:qlinkfrontend/features/chat/presentation/widgets/attachment_butt
 import 'package:qlinkfrontend/features/chat/presentation/widgets/attachment_bubble.dart';
 
 import 'support/fakes.dart';
+import 'support/media.dart';
 
 import 'package:qlinkfrontend/features/auth/data/models/app_user.dart';
 import 'package:qlinkfrontend/features/auth/data/repositories/auth_repository.dart';
@@ -208,7 +209,8 @@ void main() {
     });
     final repository = ChatRepository(
       ChatApi(Dio()..httpClientAdapter = adapter),
-    );
+      mediaDirectory: () async => temp,
+    )..setAccount('me');
     const conversation = Conversation(
       PublicUser('other', 'Other'),
       roomId: 'room',
@@ -414,7 +416,8 @@ void main() {
     );
     final repository = ChatRepository(
       ChatApi(Dio()..httpClientAdapter = adapter),
-    );
+      mediaDirectory: () async => temp,
+    )..setAccount('me');
     final message = ChatMessage(
       id: 'image',
       senderId: 'other',
@@ -433,9 +436,10 @@ void main() {
         ),
       ),
     );
-    await tester.runAsync(() async {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    });
+    await pumpMedia(
+      tester,
+      () => repository.media.peekPhoto('remote-image') != null,
+    );
     await tester.pumpAndSettle();
     expect(
       adapter.requests.single.path,
@@ -453,6 +457,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(InteractiveViewer), findsOneWidget);
     expect(find.text('photo.png'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await runMediaTask(tester, repository.dispose);
   });
 
   testWidgets(
@@ -497,8 +503,9 @@ void main() {
       });
       final repository = ChatRepository(
         ChatApi(Dio()..httpClientAdapter = adapter),
+        mediaDirectory: () async => temp,
         events: events.stream,
-      );
+      )..setAccount('me');
       final auth = MediaAuth()..account('me');
       await tester.pumpWidget(
         RepositoryProvider.value(
@@ -518,9 +525,9 @@ void main() {
       );
       await tester.pumpAndSettle();
       events.add(ChatEvent('photo-event', 'room', 'PERSONAL', photo));
-      await tester.pumpAndSettle();
-      await tester.runAsync(
-        () async => Future<void>.delayed(const Duration(milliseconds: 50)),
+      await pumpMedia(
+        tester,
+        () => repository.media.peekPhoto('photo-file') != null,
       );
       await tester.pumpAndSettle();
       final original = tester.state(find.byType(AttachmentBubble));
@@ -592,21 +599,28 @@ void main() {
       scroll.jumpTo(20);
       await tester.pump();
       expect(scroll.offset, 20);
+      repository.setAccount('second-account');
       auth.account('second-account');
       await tester.pumpAndSettle();
       expect(find.byType(AttachmentBubble), findsNothing);
       expect(original.mounted, isFalse);
       events.add(ChatEvent('photo-event', 'room', 'PERSONAL', photo));
+      await pumpMedia(
+        tester,
+        () => repository.media.peekPhoto('photo-file') != null,
+      );
       await tester.pumpAndSettle();
       expect(
         adapter.requests.where((r) => r.path.endsWith('/download')),
         hasLength(2),
       );
+      repository.setAccount(null);
       auth.account(null);
       await tester.pumpAndSettle();
       expect(find.byType(AttachmentBubble), findsNothing);
       await tester.pumpWidget(const SizedBox());
-      await tester.runAsync(() async {
+      await runMediaTask(tester, () async {
+        await repository.dispose();
         await events.close();
         await auth.close();
       });
@@ -629,7 +643,8 @@ void main() {
       );
       final repository = ChatRepository(
         ChatApi(Dio()..httpClientAdapter = adapter),
-      );
+        mediaDirectory: () async => temp,
+      )..setAccount('me');
       ChatMessage photo({
         String id = 'temporary',
         String? file,
@@ -725,6 +740,10 @@ void main() {
       expect(find.text('Image unavailable. Tap to retry.'), findsOneWidget);
       fail = false;
       await tester.tap(find.text('Image unavailable. Tap to retry.'));
+      await pumpMedia(
+        tester,
+        () => repository.media.peekPhoto('retry') != null,
+      );
       await tester.pumpAndSettle();
       expect(find.text('Image unavailable. Tap to retry.'), findsNothing);
       expect(find.byType(Image), findsOneWidget);
@@ -736,6 +755,7 @@ void main() {
       expect(adapter.requests, hasLength(5));
       expect(find.byType(Image), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
+      await runMediaTask(tester, repository.dispose);
     },
   );
 
@@ -755,7 +775,8 @@ void main() {
           );
           final repository = ChatRepository(
             ChatApi(Dio()..httpClientAdapter = adapter),
-          );
+            mediaDirectory: () async => temp,
+          )..setAccount('me');
           final photo = ChatMessage(
             id: 'photo',
             senderId: 'other',
@@ -781,9 +802,9 @@ void main() {
               ),
             ),
           );
-          await tester.pumpAndSettle();
-          await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 50)),
+          await pumpMedia(
+            tester,
+            () => repository.media.peekPhoto('file') != null,
           );
           await tester.pumpAndSettle();
           final image = tester.widget<Image>(find.byType(Image));
@@ -794,7 +815,7 @@ void main() {
           expect(size.width / size.height, closeTo(portrait ? .25 : 4, .01));
           expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox());
-          await tester.runAsync(repository.dispose);
+          await runMediaTask(tester, repository.dispose);
         },
       );
     }
