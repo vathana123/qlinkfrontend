@@ -1,3 +1,5 @@
+import '../features/chat/data/repositories/external_share_intake.dart';
+import '../features/chat/presentation/screens/share_screen.dart';
 import '../features/chat/data/models/chat_models.dart';
 import '../features/push/push_client.dart';
 import '../features/push/push_session.dart';
@@ -46,6 +48,7 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _chat.outbox.resume();
       _push?.resume();
+      unawaited(_checkShare());
     }
   }
 
@@ -59,14 +62,70 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
   late final GoRouter _router = createRouter(widget.auth, _refresh);
   RealtimeSession? _session;
   PushSession? _push;
+  final _shares = ExternalShareIntake();
+  StreamSubscription<void>? _shareChanges;
+  bool _shareOpening = false;
+  final _presentedShares = <String>{};
+  Future<void> _checkShare() async {
+    if (!mounted ||
+        _shareOpening ||
+        widget.auth.state.user == null ||
+        _router.routeInformationProvider.value.uri.path == '/share') {
+      return;
+    }
+    _shareOpening = true;
+    final account = widget.auth.state.user!.id;
+    try {
+      final draft = await _shares.pending();
+      if (!mounted || widget.auth.state.user?.id != account || draft == null) {
+        return;
+      }
+      if (draft.id != null && !_presentedShares.add(draft.id!)) {
+        return;
+      }
+      if (_presentedShares.length > 128) {
+        _presentedShares.remove(_presentedShares.first);
+      }
+      // GoRouter transfers the pushed route's completion to its replacement.
+      // Do not keep the intake busy for the lifetime of the destination chat.
+      unawaited(
+        _router
+            .push<void>(
+              '/share',
+              extra: ShareRequest(
+                draft,
+                onRelease: () => _shares.discard(draft.id),
+              ),
+            )
+            .then((_) {
+              if (mounted) {
+                WidgetsBinding.instance.addPostFrameCallback(
+                  (_) => unawaited(_checkShare()),
+                );
+              }
+            }),
+      );
+    } finally {
+      _shareOpening = false;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _chat.setAccount(widget.auth.state.user?.id);
-    _chatSession = widget.auth.stream.listen(
-      (state) => _chat.setAccount(state.user?.id),
+    _shares.start();
+    _shareChanges = _shares.changes.listen((_) => unawaited(_checkShare()));
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => unawaited(_checkShare()),
     );
+    _chatSession = widget.auth.stream.listen((state) {
+      _chat.setAccount(state.user?.id);
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => unawaited(_checkShare()),
+      );
+    });
     if (widget.pushClient != null) {
       _push = PushSession(widget.auth, _chat, widget.pushClient!, (
         conversation,
@@ -89,6 +148,8 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _session?.dispose();
+    unawaited(_shareChanges?.cancel());
+    unawaited(_shares.dispose());
     if (_push != null) unawaited(_push!.dispose());
     unawaited(_chatSession.cancel());
     unawaited(_chat.dispose());
