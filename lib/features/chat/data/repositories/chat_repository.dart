@@ -410,6 +410,44 @@ class ChatRepository {
     }
   }
 
+  Future<ChatMessage> react(
+    String room,
+    String id,
+    String emoji,
+    bool selected,
+    String account,
+  ) async {
+    final response = await api.dio.put<dynamic>(
+      '/api/v1/chat/rooms/$room/messages/$id/reactions',
+      data: {'emoji': emoji, 'selected': selected},
+      options: Options(extra: {'expectedAccountId': account}),
+    );
+    return ChatMessage.fromJson(
+      Map<String, dynamic>.from(response.data['data'] as Map),
+    );
+  }
+
+  Future<SendResult> forward(
+    String room,
+    ChatMessage message,
+    CancelToken cancel,
+  ) async {
+    final j = await api.post(
+      'chat/rooms/$room/forward',
+      {
+        'clientMessageId': message.clientMessageId,
+        'sourceRoomId': message.forwardSourceRoom,
+        'messageId': message.forwardSourceId,
+      },
+      cancelToken: cancel,
+      expectedAccountId: message.senderId,
+    );
+    return SendResult(
+      ChatRoom.fromJson(j['room'] as Map<String, dynamic>),
+      ChatMessage.fromJson(j['message'] as Map<String, dynamic>),
+    );
+  }
+
   Future<ChatMessage> editMessage(
     String room,
     ChatMessage message,

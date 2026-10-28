@@ -1,3 +1,5 @@
+import '../../features/chat/presentation/screens/share_screen.dart';
+
 import 'dart:async';
 
 import '../../features/chat/presentation/screens/group_info_screen.dart';
@@ -74,6 +76,14 @@ GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
       builder: (_, s) => GroupInfoScreen(roomId: s.pathParameters['id']!),
     ),
     GoRoute(path: '/search', builder: (_, _) => const UserSearchScreen()),
+    GoRoute(
+      path: '/share',
+      redirect: (_, s) => s.extra is ShareRequest ? null : '/chats',
+      builder: (_, s) {
+        final request = s.extra! as ShareRequest;
+        return ShareScreen(draft: request.draft, onRelease: request.onRelease);
+      },
+    ),
     GoRoute(path: '/chat-search', builder: (_, _) => const ChatSearchScreen()),
     GoRoute(path: '/scan', builder: (_, _) => const QrScannerScreen()),
     GoRoute(path: '/my-qr', builder: (_, _) => const MyQrScreen()),

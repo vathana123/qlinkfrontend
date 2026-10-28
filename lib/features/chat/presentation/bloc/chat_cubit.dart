@@ -157,6 +157,56 @@ class ChatCubit extends Cubit<ChatState> {
     _update();
   }
 
+  final _reactionRequests = <String>{};
+  Future<void> react(ChatMessage message, String emoji) async {
+    if (state.removed ||
+        message.deleted ||
+        message.hidden ||
+        !message.isConfirmed ||
+        state.roomId == null ||
+        !_reactionRequests.add(message.id)) {
+      return;
+    }
+    final generation = _accessGeneration;
+    final original = state.messages
+        .where((m) => m.id == message.id)
+        .firstOrNull;
+    if (original == null) {
+      _reactionRequests.remove(message.id);
+      return;
+    }
+    final old = original.reactions.where((r) => r.emoji == emoji).firstOrNull;
+    final selected = !(old?.selected ?? false);
+    final count = (old?.count ?? 0) + (selected ? 1 : -1);
+    final reactions = original.reactions
+        .where((r) => r.emoji != emoji)
+        .toList();
+    if (count > 0) reactions.add(MessageReaction(emoji, count, selected));
+    _update(
+      messages: _merge([
+        original.withDelivery(original.delivery, reactions: reactions),
+      ]),
+    );
+    try {
+      final result = await repository.react(
+        state.roomId!,
+        message.id,
+        emoji,
+        selected,
+        senderId,
+      );
+      if (!isClosed && generation == _accessGeneration) {
+        _update(messages: _merge([result]));
+      }
+    } catch (e) {
+      if (!isClosed && generation == _accessGeneration) {
+        _update(messages: _merge([original]), error: chatError(e));
+      }
+    } finally {
+      _reactionRequests.remove(message.id);
+    }
+  }
+
   Future<bool> editMessage(ChatMessage message, String content) async {
     if (state.roomId == null) return false;
     try {

@@ -43,6 +43,20 @@ class ReplyPreview {
   );
 }
 
+const reactionEmoji = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+class MessageReaction {
+  const MessageReaction(this.emoji, this.count, this.selected);
+  final String emoji;
+  final int count;
+  final bool selected;
+  factory MessageReaction.fromJson(Map<String, dynamic> j) => MessageReaction(
+    j['emoji'] as String,
+    j['count'] as int,
+    j['selected'] == true,
+  );
+}
+
 class ChatMessage {
   const ChatMessage({
     required this.id,
@@ -68,7 +82,15 @@ class ChatMessage {
     this.revision = 0,
     this.hidden = false,
     this.canDeleteForEveryone = false,
+    this.forwarded = false,
+    this.forwardSourceRoom,
+    this.forwardSourceId,
+    this.reactions = const [],
   });
+  final bool forwarded;
+  // Only pending outbox jobs retain source IDs; server DTOs expose no source history.
+  final String? forwardSourceRoom, forwardSourceId;
+  final List<MessageReaction> reactions;
   final String? replyToId;
   final ReplyPreview? reply;
   final DateTime? editedAt, removedAt;
@@ -111,7 +133,12 @@ class ChatMessage {
     AttachmentMetadata? attachment,
     DateTime? localCreatedAt,
     ReplyPreview? reply,
+    List<MessageReaction>? reactions,
   }) => ChatMessage(
+    forwarded: forwarded,
+    forwardSourceRoom: forwardSourceRoom,
+    forwardSourceId: forwardSourceId,
+    reactions: reactions ?? this.reactions,
     replyToId: replyToId,
     reply: reply ?? this.reply,
     editedAt: editedAt,
@@ -137,6 +164,9 @@ class ChatMessage {
     localCreatedAt: localCreatedAt ?? this.localCreatedAt,
   );
   Map<String, dynamic> toPendingJson() => {
+    'forwarded': forwarded,
+    'forwardSourceRoom': forwardSourceRoom,
+    'forwardSourceId': forwardSourceId,
     'id': id,
     'senderId': senderId,
     'clientMessageId': clientMessageId,
@@ -165,6 +195,14 @@ class ChatMessage {
       },
   };
   factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
+    forwarded: j['forwarded'] == true,
+    forwardSourceRoom: j['forwardSourceRoom'] as String?,
+    forwardSourceId: j['forwardSourceId'] as String?,
+    reactions: (j['reactions'] as List? ?? [])
+        .map(
+          (r) => MessageReaction.fromJson(Map<String, dynamic>.from(r as Map)),
+        )
+        .toList(),
     replyToId: j['replyToId'] as String?,
     reply: j['reply'] == null
         ? null

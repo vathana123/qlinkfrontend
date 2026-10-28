@@ -1,3 +1,5 @@
+import '../../data/models/share_draft.dart';
+import 'share_screen.dart';
 import '../../data/datasources/chat_api.dart';
 
 import 'dart:async';
@@ -258,6 +260,24 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (!message.deleted && !message.hidden) ...[
+              Wrap(
+                children: [
+                  for (final emoji in reactionEmoji)
+                    IconButton(
+                      tooltip: 'React $emoji',
+                      onPressed: () => Navigator.pop(context, 'react:$emoji'),
+                      icon: Text(emoji, style: const TextStyle(fontSize: 24)),
+                    ),
+                ],
+              ),
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.forward),
+                title: const Text('Forward'),
+                onTap: () => Navigator.pop(context, 'forward'),
+              ),
+            ],
             if (!message.deleted && cubit.state.canSend)
               ListTile(
                 dense: true,
@@ -296,7 +316,16 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
     if (_search != null && (action == 'reply' || action == 'edit')) {
       _toggleSearch();
     }
-    if (action == 'reply') {
+    if (action.startsWith('react:')) {
+      await cubit.react(message, action.substring(6));
+    } else if (action == 'forward') {
+      context.push(
+        '/share',
+        extra: ShareRequest(
+          ShareDraft(message: message, sourceRoom: cubit.state.roomId),
+        ),
+      );
+    } else if (action == 'reply') {
       if (_editing != null) _cancelEdit();
       cubit.selectReply(message);
     } else if (action == 'edit') {
@@ -665,6 +694,14 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                                             fontWeight: FontWeight.w600,
                                           ),
                                         ),
+                                      if (message.forwarded && !message.deleted)
+                                        const Text(
+                                          'Forwarded',
+                                          style: TextStyle(
+                                            fontStyle: FontStyle.italic,
+                                            fontSize: 12,
+                                          ),
+                                        ),
                                       if (message.reply != null)
                                         _quote(message.reply!),
                                       if (message.deleted)
@@ -696,6 +733,30 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                                                     ? colors.onPrimaryContainer
                                                     : colors.onSurface,
                                               ),
+                                        ),
+                                      if (!message.deleted &&
+                                          message.reactions.isNotEmpty)
+                                        Wrap(
+                                          spacing: 4,
+                                          children: [
+                                            for (final reaction
+                                                in message.reactions)
+                                              FilterChip(
+                                                label: Text(
+                                                  '${reaction.emoji} ${reaction.count}',
+                                                ),
+                                                selected: reaction.selected,
+                                                visualDensity:
+                                                    VisualDensity.compact,
+                                                showCheckmark: false,
+                                                onSelected: (_) => context
+                                                    .read<ChatCubit>()
+                                                    .react(
+                                                      message,
+                                                      reaction.emoji,
+                                                    ),
+                                              ),
+                                          ],
                                         ),
                                       const SizedBox(height: 4),
                                       Text(

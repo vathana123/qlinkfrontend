@@ -245,6 +245,7 @@ class OutgoingQueue {
     PrepareAttachment? prepare,
     bool ownsFile = true,
     AttachmentSource? preparationSource,
+    void Function()? onRetained,
   }) async {
     if (!_bound) {
       setAccount(message.senderId);
@@ -317,6 +318,7 @@ class OutgoingQueue {
       }
       await _persist();
       if (!_current(job)) return false;
+      onRetained?.call();
       if (originalOwnedPath != null && originalOwnedPath != job.ownedPath) {
         await _delete(originalOwnedPath);
       }
@@ -564,18 +566,20 @@ class OutgoingQueue {
       if (!_current(job)) return;
       if (!job.message.isConfirmed) {
         message = job.message;
-        final result = await repository.send(
-          expectedAccountId: message.senderId,
-          replyToId: job.message.replyToId,
-          roomId: job.roomId,
-          recipientId: job.recipientId,
-          key: message.clientMessageId,
-          content: message.content,
-          fileId: message.fileId,
-          durationMs: message.durationMs,
-          type: message.type,
-          cancelToken: job.cancel,
-        );
+        final result = message.forwardSourceId != null
+            ? await repository.forward(job.roomId!, message, job.cancel)
+            : await repository.send(
+                expectedAccountId: message.senderId,
+                replyToId: job.message.replyToId,
+                roomId: job.roomId,
+                recipientId: job.recipientId,
+                key: message.clientMessageId,
+                content: message.content,
+                fileId: message.fileId,
+                durationMs: message.durationMs,
+                type: message.type,
+                cancelToken: job.cancel,
+              );
         if (!_current(job)) return;
         confirm(result.message, result.room.id);
       }
