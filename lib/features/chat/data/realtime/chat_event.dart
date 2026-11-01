@@ -27,6 +27,7 @@ class ChatEvent {
             'MESSAGE_HIDDEN',
             'GROUP_UPDATED',
             'GROUP_REMOVED',
+            'ROOM_SETTINGS_UPDATED',
           }.contains(j['type'])) {
         return null;
       }
@@ -41,6 +42,19 @@ class ChatEvent {
         return null;
       }
       final m = j['message'];
+      if (j['type'] == 'ROOM_SETTINGS_UPDATED') {
+        if (j['room'] is! Map<String, dynamic>) return null;
+        final room = ChatRoom.fromJson(j['room'] as Map<String, dynamic>);
+        if (room.id != j['roomId'] || room.type != j['roomType']) return null;
+        return ChatEvent(
+          j['eventId'] as String,
+          room.id,
+          room.type,
+          null,
+          room: room,
+          type: 'ROOM_SETTINGS_UPDATED',
+        );
+      }
       if ((j['type'] as String).startsWith('GROUP_')) {
         if (j['roomType'] == 'PERSONAL') return null;
         ChatRoom? room;

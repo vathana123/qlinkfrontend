@@ -286,6 +286,12 @@ class _GroupInfoViewState extends State<_GroupInfoView> {
                   child: Text(room.description!),
                 ),
               const SizedBox(height: 12),
+              ListTile(
+                leading: const Icon(Icons.perm_media_outlined),
+                title: const Text('Shared Media'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/rooms/${room.id}/media'),
+              ),
               Text(
                 room.messageHistoryVisibility == 'VIEW_AFTER_JOIN'
                     ? 'Members see messages sent after their latest join.'

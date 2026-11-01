@@ -4,6 +4,7 @@ import 'dart:math';
 import '../../../../core/storage/token_storage.dart';
 import 'chat_event.dart';
 import 'chat_socket.dart';
+import 'activity_event.dart';
 
 enum ChatConnection { disconnected, reconnecting, connected }
 
@@ -34,6 +35,47 @@ class ChatRealtime {
   final double Function() _jitter;
   final _events = StreamController<ChatEvent>.broadcast();
   final _states = StreamController<ChatConnection>.broadcast();
+  final _activity = StreamController<ActivityEvent>.broadcast();
+  Stream<ActivityEvent> get activity => _activity.stream;
+  final _watchers = <String, int>{};
+  void Function()? _cancelActivity;
+  bool _activityReady = false;
+  Timer? _watchTimer;
+  void watch(String user, bool enabled, {String? account}) {
+    if (account != null && account != _user) return;
+    if (enabled) {
+      _watchers[user] = (_watchers[user] ?? 0) + 1;
+    } else {
+      final remaining = (_watchers[user] ?? 1) - 1;
+      if (remaining <= 0) {
+        _watchers.remove(user);
+      } else {
+        _watchers[user] = remaining;
+      }
+    }
+    _watchTimer?.cancel();
+    _watchTimer = Timer(const Duration(milliseconds: 250), _sendWatches);
+  }
+
+  void _sendWatches() {
+    if (_activityReady) {
+      sendActivity('watch', {'userIds': _watchers.keys.take(100).toList()});
+    }
+  }
+
+  void sendActivity(
+    String action,
+    Map<String, dynamic> payload, {
+    String? account,
+  }) {
+    if (account != null && account != _user) return;
+    final socket = _socket;
+    if (state != ChatConnection.connected || socket is! ActivitySocket) return;
+    try {
+      (socket as ActivitySocket).sendActivity(action, payload);
+    } catch (_) {}
+  }
+
   Stream<ChatEvent> get events => _events.stream;
   Stream<ChatConnection> get states => _states.stream;
   ChatConnection state = ChatConnection.disconnected;
@@ -48,6 +90,7 @@ class ChatRealtime {
   void session(String? user) {
     if (_user == user || _disposed) return;
     _stop();
+    _watchers.clear();
     _user = user;
     _attempt = 0;
     _rejected = null;
@@ -75,6 +118,12 @@ class ChatRealtime {
     _retry = null;
     _renew = null;
     _timeout = null;
+    _watchTimer?.cancel();
+    try {
+      _cancelActivity?.call();
+    } catch (_) {}
+    _cancelActivity = null;
+    _activityReady = false;
     final unsubscribe = _unsubscribe;
     _unsubscribe = null;
     final socket = _socket;
@@ -106,6 +155,20 @@ class ChatRealtime {
             if (!_wanted || generation != _generation || _unsubscribe != null) {
               return;
             }
+            if (socket is ActivitySocket) {
+              _cancelActivity = (socket as ActivitySocket).subscribeActivity(
+                (body) {
+                  if (!_wanted || generation != _generation) return;
+                  final event = ActivityEvent.parse(body);
+                  if (event != null) _activity.add(event);
+                },
+                () {
+                  if (!_wanted || generation != _generation) return;
+                  _activityReady = true;
+                  _sendWatches();
+                },
+              );
+            }
             _unsubscribe = socket.subscribe(
               (body) {
                 if (!_wanted || generation != _generation) return;
@@ -117,6 +180,7 @@ class ChatRealtime {
                 _timeout?.cancel();
                 _attempt = 0;
                 _state(ChatConnection.connected);
+                _sendWatches();
                 final expiry = accessTokenExpiry(token);
                 final delay = expiry == null
                     ? const Duration(minutes: 10)
@@ -171,5 +235,6 @@ class ChatRealtime {
     await _tokens?.cancel();
     await _events.close();
     await _states.close();
+    await _activity.close();
   }
 }

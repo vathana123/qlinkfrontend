@@ -45,11 +45,21 @@ class CachedPhoto {
   }
 }
 
+enum MediaCategory { photos, audio, files }
+
+class CacheUsage {
+  const CacheUsage(this.bytes);
+  final Map<MediaCategory, int> bytes;
+  int get total => bytes.values.fold(0, (sum, value) => sum + value);
+  int operator [](MediaCategory category) => bytes[category] ?? 0;
+}
+
 class _MediaFile {
-  _MediaFile(this.file, this.size, this.validatedAt);
+  _MediaFile(this.file, this.size, this.validatedAt, this.category);
   final File file;
   final int size;
   final DateTime validatedAt;
+  final MediaCategory category;
   double? aspectRatio;
 }
 
@@ -61,6 +71,10 @@ class _References {
 /// Cache hits require the same active account; logout cancels work and purges
 /// both disk files and this cache's decoded Flutter image entries.
 class PrivateMediaCache {
+  // Serialize session-folder creation across cache instances so recovery never
+  // sweeps a folder still used by another live instance in this process.
+  static Future<void>? _folderWork;
+  static final _activeFolders = <String>{};
   PrivateMediaCache(
     this.dio, {
     Future<Directory> Function()? directory,
@@ -85,6 +99,77 @@ class PrivateMediaCache {
   final _seeds = <String, Future<void>>{};
   final _cancels = <String, CancelToken>{};
   final _pins = <String>{};
+  final _clearing = <String>{};
+  final _storageChanges = StreamController<void>.broadcast();
+  Stream<void> get storageChanges => _storageChanges.stream;
+  void _storageChanged() {
+    if (!_storageChanges.isClosed) _storageChanges.add(null);
+  }
+
+  /// Counts completed reusable files once, even when multiple messages reference one ID.
+  Future<CacheUsage> usage() async {
+    final generation = _generation;
+    if (_account != null && !_disposed) {
+      try {
+        await _cacheFolder();
+      } catch (_) {
+        if (generation != _generation) return const CacheUsage({});
+        rethrow;
+      }
+    }
+    final totals = <MediaCategory, int>{};
+    for (final entry in _files.values.toList()) {
+      final stat = await entry.file.stat();
+      if (generation != _generation) return const CacheUsage({});
+      if (stat.type == FileSystemEntityType.file) {
+        totals.update(
+          entry.category,
+          (value) => value + stat.size,
+          ifAbsent: () => stat.size,
+        );
+      }
+    }
+    return CacheUsage(Map.unmodifiable(totals));
+  }
+
+  /// Local cache only. Outbox/picker paths never enter this registry. Active
+  /// playback, downloads, decoding and upload-preview seeds remain protected.
+  Future<CacheUsage> clearCached(Set<MediaCategory> categories) async {
+    final generation = _generation;
+    Object? failure;
+    for (final item in _files.entries.toList()) {
+      final id = item.key, entry = item.value;
+      if (generation != _generation) return const CacheUsage({});
+      if (!categories.contains(entry.category) ||
+          _pins.contains(id) ||
+          _downloads.containsKey(id) ||
+          _photoLoads.containsKey(id) ||
+          _seeds.containsKey(id) ||
+          !_clearing.add(id)) {
+        continue;
+      }
+      try {
+        if (await entry.file.exists()) await entry.file.delete();
+        if (generation != _generation) return const CacheUsage({});
+        if (identical(_files[id], entry)) {
+          _removeStored(id);
+          _references.remove(id);
+          if (!_changes.isClosed) _changes.add(id);
+        }
+      } on FileSystemException catch (error) {
+        failure = error;
+      } finally {
+        _clearing.remove(id);
+      }
+    }
+    await _cleanup;
+    _storageChanged();
+    if (failure != null) {
+      throw StateError('Some cached files could not be cleared. Please retry.');
+    }
+    return usage();
+  }
+
   final _waiters = Queue<Completer<void>>();
   final _changes = StreamController<String?>.broadcast(sync: true);
   Stream<String?> get changes => _changes.stream;
@@ -136,12 +221,17 @@ class PrivateMediaCache {
     _references.clear();
     _pins.clear();
     _diskBytes = _photoBytes = 0;
+    _storageChanged();
     final oldFolder = _folder;
     _folder = null;
     if (oldFolder != null) {
       _later(
         oldFolder.then((folder) async {
-          if (await folder.exists()) await folder.delete(recursive: true);
+          try {
+            if (await folder.exists()) await folder.delete(recursive: true);
+          } finally {
+            _activeFolders.remove(folder.path);
+          }
         }),
       );
     }
@@ -214,6 +304,7 @@ class PrivateMediaCache {
         }),
       );
     }
+    _storageChanged();
   }
 
   void pin(String id) => _pins.add(id);
@@ -232,13 +323,52 @@ class PrivateMediaCache {
     }
   }
 
-  Future<Directory> _cacheFolder() => _folder ??= () async {
+  Future<Directory> _cacheFolder() {
+    if (_folder != null) return _folder!;
+    final generation = _generation;
     final account = base64Url.encode(utf8.encode(_account!));
-    final parent = await _directory();
-    final root = await Directory('${parent.path}/qlink-media-v1/$account')
-        .create(recursive: true);
-    return root.createTemp('session-');
-  }();
+    final ready = Completer<Directory>();
+    _folder = ready.future;
+    final previous = _folderWork;
+    final completed = Completer<void>();
+    _folderWork = completed.future;
+    unawaited(() async {
+      try {
+        if (previous != null) await previous;
+        _check(generation);
+        final parent = await _directory();
+        _check(generation);
+        final root = await Directory('${parent.path}/qlink-media-v1/$account')
+            .create(recursive: true);
+        // Only our own account's abandoned session folders; never picker,
+        // outbox, other-account directories or symlinks.
+        await for (final entry in root.list(followLinks: false)) {
+          final name = entry.path.replaceAll('\\', '/').split('/').last;
+          if (entry is Directory &&
+              name.startsWith('session-') &&
+              !_activeFolders.contains(entry.path)) {
+            await entry.delete(recursive: true);
+          }
+        }
+        _check(generation);
+        final folder = await root.createTemp('session-');
+        if (generation != _generation || _disposed) {
+          await folder.delete(recursive: true);
+          _check(generation);
+        }
+        _activeFolders.add(folder.path);
+        ready.complete(folder);
+      } catch (error, stack) {
+        if (identical(_folder, ready.future)) _folder = null;
+        ready.completeError(error, stack);
+      } finally {
+        if (identical(_folderWork, completed.future)) _folderWork = null;
+        completed.complete();
+      }
+    }());
+    return ready.future;
+  }
+
   Future<void> _acquire() async {
     if (_active < 4) {
       _active++;
@@ -257,9 +387,17 @@ class PrivateMediaCache {
     }
   }
 
-  Future<File> file(String id, {bool voice = false}) {
+  Future<File> file(
+    String id, {
+    bool voice = false,
+    MediaCategory? category,
+    String? filename,
+  }) {
     final generation = _generation;
     _check(generation);
+    if (_clearing.contains(id)) {
+      return Future.error(StateError('Cache is being cleared. Please retry.'));
+    }
     final pending = _downloads[id];
     if (pending != null) return pending;
     if (_downloads.length >= 32) {
@@ -268,12 +406,20 @@ class PrivateMediaCache {
     final cancel = CancelToken();
     _cancels[id] = cancel;
     late final Future<File> operation;
-    operation = _load(id, generation, cancel, voice).whenComplete(() {
-      if (identical(_downloads[id], operation)) {
-        _downloads.remove(id);
-        _cancels.remove(id);
-      }
-    });
+    operation =
+        _load(
+          id,
+          generation,
+          cancel,
+          voice,
+          category ?? (voice ? MediaCategory.audio : MediaCategory.files),
+          filename,
+        ).whenComplete(() {
+          if (identical(_downloads[id], operation)) {
+            _downloads.remove(id);
+            _cancels.remove(id);
+          }
+        });
     _downloads[id] = operation;
     return operation;
   }
@@ -283,6 +429,8 @@ class PrivateMediaCache {
     int generation,
     CancelToken cancel,
     bool voice,
+    MediaCategory category,
+    String? filename,
   ) async {
     var acquired = false;
     File? temporary;
@@ -337,12 +485,21 @@ class PrivateMediaCache {
       }
       _check(generation);
       if (cancel.isCancelled) throw cancel.cancelError!;
-      final saved = await temporary.rename(
-        '${folder.path}/$name.${voice ? 'wav' : 'media'}',
-      );
+      final extension = filename?.split('.').last.toLowerCase();
+      final suffix =
+          extension != null && RegExp(r'^[a-z0-9]{1,10}$').hasMatch(extension)
+          ? extension
+          : voice
+          ? 'wav'
+          : 'media';
+      final saved = await temporary.rename('${folder.path}/$name.$suffix');
+      temporary = saved;
       _check(generation);
-      _files[id] = _MediaFile(saved, size, _now());
+      if (cancel.isCancelled) throw cancel.cancelError!;
+      _files[id] = _MediaFile(saved, size, _now(), category);
       _diskBytes += size;
+      temporary = null;
+      _storageChanged();
       _prune(protect: id);
       return saved;
     } on DioException catch (error) {
@@ -403,7 +560,7 @@ class PrivateMediaCache {
     _check(generation);
     final seeded = peekPhoto(id);
     if (seeded != null) return seeded;
-    final cached = await file(id);
+    final cached = await file(id, category: MediaCategory.photos);
     final entry = _files[id];
     final bytes = await cached.readAsBytes();
     _check(generation);
@@ -456,20 +613,38 @@ class PrivateMediaCache {
     final generation = _generation;
     _check(generation);
     if (bytes.length > maxFileBytes || bytes.length > maxDiskBytes) return;
-    if (peekPhoto(id) != null || _downloads.containsKey(id)) return;
+    if (peekPhoto(id) != null ||
+        _downloads.containsKey(id) ||
+        _clearing.contains(id)) {
+      return;
+    }
     final folder = await _cacheFolder();
     _check(generation);
     final file = await File(
       '${folder.path}/${base64Url.encode(utf8.encode(id))}-${_serial++}.media',
     ).writeAsBytes(bytes, flush: true);
-    _check(generation);
-    final old = _files[id];
-    if (old != null) _removeStored(id);
-    final entry = _MediaFile(file, bytes.length, _now());
-    _files[id] = entry;
-    _diskBytes += bytes.length;
-    await _rememberPhoto(id, bytes, generation, entry);
-    _prune(protect: id);
+    try {
+      _check(generation);
+      final old = _files[id];
+      if (old != null) _removeStored(id);
+      final entry = _MediaFile(
+        file,
+        bytes.length,
+        _now(),
+        MediaCategory.photos,
+      );
+      _files[id] = entry;
+      _diskBytes += bytes.length;
+      _storageChanged();
+      await _rememberPhoto(id, bytes, generation, entry);
+      _prune(protect: id);
+    } catch (_) {
+      if (generation == _generation && _files[id]?.file.path == file.path) {
+        _removeStored(id);
+      }
+      if (await file.exists()) await file.delete();
+      rethrow;
+    }
   }
 
   Future<void> dispose() async {
@@ -478,5 +653,6 @@ class PrivateMediaCache {
     _account = null;
     await _cleanup;
     await _changes.close();
+    await _storageChanges.close();
   }
 }

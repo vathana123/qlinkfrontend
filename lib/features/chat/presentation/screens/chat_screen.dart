@@ -65,6 +65,28 @@ class _ChatView extends StatefulWidget {
 }
 
 class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
+  late final ChatCubit _chat;
+  Animation<double>? _coverAnimation;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final animation = ModalRoute.of(context)?.secondaryAnimation;
+    if (animation != _coverAnimation) {
+      _coverAnimation?.removeStatusListener(_covered);
+      _coverAnimation = animation;
+      animation?.addStatusListener(_covered);
+    }
+  }
+
+  void _covered(AnimationStatus status) {
+    if (status == AnimationStatus.forward) _chat.composing(false);
+  }
+
+  void _composing() => _chat.composing(
+    _editing == null &&
+        ModalRoute.of(context)?.isCurrent == true &&
+        _text.text.trim().isNotEmpty,
+  );
   late final ChatRepository _mediaRepository;
   Timer? _seenTimer;
   Timer? _highlightTimer;
@@ -143,6 +165,8 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _chat = context.read<ChatCubit>();
+    _text.addListener(_composing);
     _mediaRepository = context.read<ChatRepository>();
     WidgetsBinding.instance.addObserver(this);
     _scroll.addListener(_scheduleSeen);
@@ -156,6 +180,7 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _chat.composing(false);
     if (state == AppLifecycleState.resumed) {
       _scheduleSeen();
       unawaited(context.read<ChatCubit>().synchronize());
@@ -205,6 +230,9 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   final _scroll = ScrollController();
   @override
   void dispose() {
+    _chat.composing(false);
+    _coverAnimation?.removeStatusListener(_covered);
+    _text.removeListener(_composing);
     _mediaRepository.pauseVoiceForRoom(widget.conversation.roomId);
     _seenTimer?.cancel();
     _highlightTimer?.cancel();
@@ -426,7 +454,11 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final conversation = widget.conversation;
     final colors = Theme.of(context).colorScheme;
-    final chat = context.watch<ChatCubit>().state;
+    context.select(
+      (ChatCubit cubit) =>
+          (cubit.state.roomId, cubit.state.group, cubit.state.removed),
+    );
+    final chat = context.read<ChatCubit>().state;
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: BlurAppBar(
@@ -450,16 +482,32 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                     ),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Text(
-                        chat.group?.title ?? conversation.title,
-                        overflow: TextOverflow.ellipsis,
+                      child: _ActivityTitle(
+                        title: chat.group?.title ?? conversation.title,
+                        group: true,
                       ),
                     ),
                     const Icon(Icons.info_outline),
                   ],
                 ),
               )
-            : null,
+            : InkWell(
+                onTap: conversation.recipient == null
+                    ? null
+                    : () async {
+                        _chat.composing(false);
+                        await context.push(
+                          '/chat-info',
+                          extra: Conversation(
+                            conversation.recipient,
+                            roomId: chat.roomId,
+                            canMessage: chat.canMessage,
+                          ),
+                        );
+                        if (mounted) await _chat.refreshPermissions();
+                      },
+                child: _ActivityTitle(title: conversation.title),
+              ),
         actions: [
           if (chat.roomId != null && !chat.removed)
             IconButton(
@@ -468,10 +516,17 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
               icon: const Icon(Icons.search),
             ),
           if (!conversation.isGroup)
-            UserAvatar(
-              name: conversation.title,
-              url: conversation.avatarUrl,
-              radius: 18,
+            BlocSelector<ChatCubit, ChatState, bool>(
+              selector: (state) => state.presence?.online == true,
+              builder: (context, online) => Badge(
+                isLabelVisible: online,
+                backgroundColor: colors.primary,
+                child: UserAvatar(
+                  name: conversation.title,
+                  url: conversation.avatarUrl,
+                  radius: 18,
+                ),
+              ),
             ),
           const SizedBox(width: 16),
           if (chat.roomId != null && !chat.removed)
@@ -496,6 +551,15 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
       body: SafeArea(
         top: false,
         child: BlocConsumer<ChatCubit, ChatState>(
+          buildWhen: (a, b) =>
+              (a.presence == b.presence && a.typing == b.typing) ||
+              a.messages != b.messages ||
+              a.loading != b.loading ||
+              a.error != b.error ||
+              a.canSend != b.canSend ||
+              a.group != b.group ||
+              a.cursor != b.cursor ||
+              a.contextMessageId != b.contextMessageId,
           listenWhen: (previous, current) =>
               previous.messages != current.messages ||
               previous.removed != current.removed,
@@ -876,10 +940,12 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
                     child: !state.canSend
-                        ? const Padding(
-                            padding: EdgeInsets.all(12),
+                        ? Padding(
+                            padding: const EdgeInsets.all(12),
                             child: Text(
-                              'Messaging is unavailable for you in this group.',
+                              conversation.isGroup
+                                  ? 'Messaging is unavailable for you in this group.'
+                                  : 'Personal messaging is unavailable.',
                             ),
                           )
                         : VoiceInput(
@@ -898,4 +964,43 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+class _ActivityTitle extends StatelessWidget {
+  const _ActivityTitle({required this.title, this.group = false});
+  final String title;
+  final bool group;
+  @override
+  Widget build(BuildContext context) => BlocBuilder<ChatCubit, ChatState>(
+    buildWhen: (a, b) => a.presence != b.presence || a.typing != b.typing,
+    builder: (context, state) {
+      final seen = state.presence?.lastSeenAt?.toLocal();
+      final status = state.typing
+          ? 'Typing…'
+          : group
+          ? null
+          : state.presence?.online == true
+          ? 'Online'
+          : seen != null
+          ? 'Last seen ${MaterialLocalizations.of(context).formatShortDate(seen)} ${TimeOfDay.fromDateTime(seen).format(context)}'
+          : state.presence?.online == false
+          ? 'Offline'
+          : null;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, overflow: TextOverflow.ellipsis),
+          if (status != null)
+            Text(
+              status,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+        ],
+      );
+    },
+  );
 }

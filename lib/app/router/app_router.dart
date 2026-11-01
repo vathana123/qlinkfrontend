@@ -1,4 +1,7 @@
 import '../../features/chat/presentation/screens/share_screen.dart';
+import '../../features/chat/presentation/screens/shared_media_screen.dart';
+import '../../features/chat/presentation/screens/storage_screen.dart';
+import '../../features/chat/presentation/screens/chat_info_screen.dart';
 
 import 'dart:async';
 
@@ -23,6 +26,7 @@ import '../../features/auth/presentation/screens/sign_in_screen.dart';
 import '../../features/auth/presentation/screens/sign_up_screen.dart';
 import '../../features/home/presentation/screens/home_screen.dart';
 import '../../features/user/presentation/screens/user_profile_screen.dart';
+import '../../features/user/presentation/screens/privacy_screen.dart';
 import '../../features/user/presentation/screens/edit_profile_screen.dart';
 
 String? authRedirect(AuthState auth, String location) {
@@ -96,7 +100,41 @@ GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
       ),
     ),
     GoRoute(path: '/chats', builder: (_, _) => const HomeScreen()),
+    GoRoute(
+      path: '/rooms/:id/media',
+      builder: (_, s) => SharedMediaScreen(roomId: s.pathParameters['id']!),
+    ),
+    GoRoute(
+      path: '/chat-info',
+      redirect: (_, s) => s.extra is Conversation ? null : '/chats',
+      builder: (_, s) => ChatInfoScreen(conversation: s.extra! as Conversation),
+    ),
+    GoRoute(
+      path: '/profile/settings/storage',
+      builder: (_, _) => const StorageScreen(),
+    ),
+    GoRoute(
+      path: '/chats/archived',
+      builder: (_, _) => const HomeScreen(archived: true),
+    ),
     GoRoute(path: '/profile', builder: (_, _) => const UserProfileScreen()),
+    GoRoute(
+      path: '/profile/settings',
+      builder: (_, _) => const SettingsScreen(),
+    ),
+    GoRoute(
+      path: '/profile/settings/privacy',
+      builder: (_, _) => const PrivacyScreen(),
+    ),
+    GoRoute(
+      path: '/profile/settings/blocked',
+      builder: (_, _) => const PrivacyScreen(blockedUsers: true),
+    ),
+    GoRoute(
+      path: '/user-profile',
+      redirect: (_, s) => s.extra is PublicUser ? null : '/chats',
+      builder: (_, s) => PrivacyScreen(user: s.extra! as PublicUser),
+    ),
     GoRoute(
       path: '/profile/edit',
       builder: (_, _) => const EditProfileScreen(),

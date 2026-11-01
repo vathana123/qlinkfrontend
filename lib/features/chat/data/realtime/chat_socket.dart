@@ -26,7 +26,15 @@ typedef SocketFactory = ChatSocket Function(
   SocketCallbacks callbacks,
 );
 
-class NativeStompSocket implements ChatSocket {
+abstract interface class ActivitySocket {
+  void Function() subscribeActivity(
+    void Function(String body) receive,
+    void Function() ready,
+  );
+  void sendActivity(String action, Map<String, dynamic> payload);
+}
+
+class NativeStompSocket implements ChatSocket, ActivitySocket {
   NativeStompSocket(String url, String token, SocketCallbacks callbacks) {
     _client = StompClient(
       config: StompConfig(
@@ -41,6 +49,11 @@ class NativeStompSocket implements ChatSocket {
         onWebSocketDone: callbacks.closed,
         onWebSocketError: (_) => callbacks.closed(),
         onUnhandledReceipt: (frame) {
+          if (frame.headers['receipt-id'] == 'activity-ready') {
+            final ready = _activityReady;
+            _activityReady = null;
+            ready?.call();
+          }
           if (frame.headers['receipt-id'] == 'chat-ready') {
             final ready = _ready;
             _ready = null;
@@ -52,6 +65,33 @@ class NativeStompSocket implements ChatSocket {
     );
   }
   late final StompClient _client;
+  void Function()? _activityReady;
+  @override
+  void sendActivity(String action, Map<String, dynamic> payload) =>
+      _client.send(
+        destination: '/app/activity/$action',
+        body: jsonEncode(payload),
+        headers: {'content-type': 'application/json'},
+      );
+  @override
+  void Function() subscribeActivity(
+    void Function(String body) receive,
+    void Function() ready,
+  ) {
+    _activityReady = ready;
+    final cancel = _client.subscribe(
+      destination: '/user/queue/activity',
+      headers: {'ack': 'auto', 'receipt': 'activity-ready'},
+      callback: (frame) {
+        final body =
+            frame.body ??
+            (frame.binaryBody == null ? null : utf8.decode(frame.binaryBody!));
+        if (body != null) receive(body);
+      },
+    );
+    return () => cancel();
+  }
+
   void Function()? _ready;
   @override
   void start() => _client.activate();

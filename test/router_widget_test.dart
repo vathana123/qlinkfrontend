@@ -92,6 +92,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('maya@example.com'), findsOneWidget);
       for (final appearance in ['Dark', 'Light', 'System']) {
+        await tester.scrollUntilVisible(
+          find.text(appearance),
+          150,
+          scrollable: find.byType(Scrollable).last,
+        );
         await Scrollable.ensureVisible(
           tester.element(find.text(appearance)),
           alignment: .3,

@@ -9,6 +9,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../data/realtime/chat_event.dart';
 import '../../data/realtime/chat_realtime.dart';
+import '../../data/realtime/activity_event.dart';
 
 import 'package:uuid/uuid.dart';
 
@@ -29,12 +30,18 @@ class ChatState {
     this.error,
     this.contextMessageId,
     this.newerCursor,
+    this.presence,
+    this.typing = false,
+    this.canMessage = true,
   });
   final String? roomId, cursor, error;
   final String? contextMessageId, newerCursor;
   final ChatRoom? group;
   final bool removed;
-  bool get canSend => !removed && (group?.canSend ?? true);
+  final ActivityEvent? presence;
+  final bool typing;
+  final bool canMessage;
+  bool get canSend => !removed && canMessage && (group?.canSend ?? true);
   final List<ChatMessage> messages;
   final bool loading, sending;
 }
@@ -44,11 +51,13 @@ class ChatCubit extends Cubit<ChatState> {
     : super(
         ChatState(roomId: conversation.roomId, group: conversation.groupRoom),
       ) {
+    _canMessage = conversation.isGroup || conversation.canMessage;
     final drafts = repository.outbox.messages(_draftKey);
     emit(
       ChatState(
         roomId: conversation.roomId ?? repository.outbox.roomId(_draftKey),
         group: conversation.groupRoom,
+        canMessage: _canMessage,
         messages: _merge(drafts),
         sending: drafts.any((m) => m.delivery == Delivery.sending),
       ),
@@ -71,10 +80,112 @@ class ChatCubit extends Cubit<ChatState> {
       if (room == state.roomId) unawaited(synchronize());
     });
     _events = repository.events.listen(_received);
+    _activity = repository.activity.listen(_receivedActivity);
+    final peer = conversation.recipient?.id;
+    if (peer != null) repository.watchPresence(peer, true, account: senderId);
     _connections = repository.connections.listen((connection) {
       if (connection == ChatConnection.connected) unawaited(synchronize());
+      if (connection != ChatConnection.connected) {
+        _presence = null;
+        _typingPeers.clear();
+        _typingSentAt = null;
+        _typingStop?.cancel();
+        _update();
+      }
     });
   }
+  late final StreamSubscription<ActivityEvent> _activity;
+  ActivityEvent? _presence;
+  bool _canMessage = true;
+  int _permissionGeneration = 0;
+  Future<void> refreshPermissions() async {
+    final peer = conversation.recipient?.id;
+    if (peer == null) return;
+    final generation = ++_permissionGeneration;
+    try {
+      final value = await repository.relationship(peer, senderId);
+      if (!isClosed &&
+          generation == _permissionGeneration &&
+          value['canMessage'] is bool) {
+        _receivedActivity(
+          ActivityEvent(
+            'PERMISSIONS',
+            peer,
+            canMessage: value['canMessage'] as bool,
+          ),
+        );
+      }
+    } catch (_) {} // Sending is always authorized again by the server.
+  }
+
+  final _typingPeers = <String, DateTime>{};
+  Timer? _typingExpiry, _typingStop;
+  DateTime? _typingSentAt;
+  void _receivedActivity(ActivityEvent event) {
+    final account = repository.api.dio.options.extra['authenticatedAccountId'];
+    if (account != null && account != senderId) return;
+    if (event.type == 'PERMISSIONS' &&
+        event.userId == conversation.recipient?.id) {
+      _permissionGeneration++;
+      if (event.canMessage == false) {
+        composing(false);
+        _typingPeers.clear();
+        _presence = null;
+      }
+      _canMessage = event.canMessage ?? false;
+      _update();
+    }
+    if (event.type == 'PRESENCE' &&
+        event.userId == conversation.recipient?.id) {
+      _presence = event;
+      _update();
+    }
+    if (event.type == 'TYPING' &&
+        event.roomId == state.roomId &&
+        event.userId != senderId) {
+      if (event.typing && event.expiresAt!.isAfter(DateTime.now())) {
+        final limit = DateTime.now().add(const Duration(seconds: 6));
+        _typingPeers[event.userId] = event.expiresAt!.isBefore(limit)
+            ? event.expiresAt!
+            : limit;
+      } else {
+        _typingPeers.remove(event.userId);
+      }
+      _expireTyping();
+    }
+  }
+
+  void _expireTyping() {
+    _typingExpiry?.cancel();
+    final now = DateTime.now();
+    _typingPeers.removeWhere((_, expiry) => !expiry.isAfter(now));
+    _update();
+    if (_typingPeers.isNotEmpty) {
+      final next = _typingPeers.values.reduce((a, b) => a.isBefore(b) ? a : b);
+      _typingExpiry = Timer(next.difference(now), _expireTyping);
+    }
+  }
+
+  void composing(bool active) {
+    _typingStop?.cancel();
+    final room = state.roomId;
+    if (room == null || !state.canSend) return;
+    final now = DateTime.now();
+    if (!active) {
+      if (_typingSentAt != null) {
+        repository.typing(room, false, account: senderId);
+      }
+      _typingSentAt = null;
+      return;
+    }
+    if (_typingSentAt == null ||
+        now.difference(_typingSentAt!) >= const Duration(seconds: 2)) {
+      repository.typing(room, true, account: senderId);
+      _typingSentAt = now;
+    }
+    _typingStop = Timer(const Duration(seconds: 3), () => composing(false));
+  }
+
   late final StreamSubscription<String> _syncRequests;
   late final StreamSubscription<ChatEvent> _events;
   late final StreamSubscription<OutgoingUpdate> _outgoing;
@@ -87,6 +198,7 @@ class ChatCubit extends Cubit<ChatState> {
   String? _contextMessageId, _newerCursor;
   int _navigationGeneration = 0;
   void _received(ChatEvent event) {
+    if (event.type == 'ROOM_SETTINGS_UPDATED') return;
     final draftMatch =
         state.roomId == null &&
         event.roomType == 'PERSONAL' &&
@@ -137,6 +249,12 @@ class ChatCubit extends Cubit<ChatState> {
 
   @override
   Future<void> close() async {
+    composing(false);
+    _typingStop?.cancel();
+    _typingExpiry?.cancel();
+    await _activity.cancel();
+    final peer = conversation.recipient?.id;
+    if (peer != null) repository.watchPresence(peer, false, account: senderId);
     _navigationGeneration++;
     _catchupTimer?.cancel();
     await _syncRequests.cancel();
@@ -445,6 +563,9 @@ class ChatCubit extends Cubit<ChatState> {
         error: error,
         contextMessageId: _contextMessageId,
         newerCursor: _newerCursor,
+        presence: _presence,
+        typing: _typingPeers.isNotEmpty,
+        canMessage: _canMessage,
       ),
     );
   }
