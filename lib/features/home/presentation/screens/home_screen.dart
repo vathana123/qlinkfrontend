@@ -11,22 +11,64 @@ import '../../../../core/widgets/user_avatar.dart';
 import '../widgets/chat_list_tile.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.archived = false});
+  final bool archived;
   @override
   Widget build(BuildContext context) => BlocProvider(
     key: ValueKey(context.watch<AuthBloc>().state.user?.id),
-    create: (c) => RoomsCubit(c.read<ChatRepository>())..load(),
-    child: const _RoomsView(),
+    create: (c) =>
+        RoomsCubit(c.read<ChatRepository>(), archived: archived)..load(),
+    child: _RoomsView(archived: archived),
   );
 }
 
 class _RoomsView extends StatefulWidget {
-  const _RoomsView();
+  const _RoomsView({required this.archived});
+  final bool archived;
   @override
   State<_RoomsView> createState() => _RoomsViewState();
 }
 
 class _RoomsViewState extends State<_RoomsView> {
+  Future<void> _actions(ChatRoom room) async {
+    final cubit = context.read<RoomsCubit>();
+    if (cubit.isUpdating(room.id)) return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.push_pin_outlined),
+              title: Text(room.pinned ? 'Unpin' : 'Pin'),
+              onTap: () => Navigator.pop(context, 'pin'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.archive_outlined),
+              title: Text(room.archived ? 'Unarchive' : 'Archive'),
+              onTap: () => Navigator.pop(context, 'archive'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.notifications_off_outlined),
+              title: Text(room.muted ? 'Unmute' : 'Mute'),
+              onTap: () => Navigator.pop(context, 'mute'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || cubit.isClosed) return;
+    switch (action) {
+      case 'pin':
+        await cubit.update(room, pinned: !room.pinned);
+      case 'archive':
+        await cubit.update(room, archived: !room.archived);
+      case 'mute':
+        await cubit.update(room, muted: !room.muted);
+    }
+  }
+
   Future<void> _navigate(String path, {Object? extra}) async {
     await context.push(path, extra: extra);
     if (mounted) await context.read<RoomsCubit>().load(refresh: true);
@@ -36,75 +78,81 @@ class _RoomsViewState extends State<_RoomsView> {
   Widget build(BuildContext context) => Scaffold(
     extendBodyBehindAppBar: true,
     appBar: BlurAppBar(
-      titleWidget: BlocBuilder<AuthBloc, AuthState>(
-        builder: (context, state) {
-          final user = state.user;
-          final colors = Theme.of(context).colorScheme;
-          final username = user?.username;
-          final email = user?.email;
-          return Tooltip(
-            message: 'Your profile',
-            child: InkWell(
-              onTap: () => context.push('/profile'),
-              borderRadius: BorderRadius.circular(12),
-              child: SizedBox(
-                height: 48,
-                child: Row(
-                  children: [
-                    UserAvatar(
-                      name: user?.displayName ?? '',
-                      url: user?.avatarUrl,
-                      radius: 19,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
+      titleWidget: widget.archived
+          ? const Text('Archived Chats')
+          : BlocBuilder<AuthBloc, AuthState>(
+              builder: (context, state) {
+                final user = state.user;
+                final colors = Theme.of(context).colorScheme;
+                final username = user?.username;
+                final email = user?.email;
+                return Tooltip(
+                  message: 'Your profile',
+                  child: InkWell(
+                    onTap: () => context.push('/profile'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: SizedBox(
+                      height: 48,
+                      child: Row(
                         children: [
-                          Text(
-                            user?.displayName ?? '',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleSmall
-                                ?.copyWith(
-                                  color: colors.onSurface,
-                                  fontWeight: FontWeight.w700,
-                                  height: 1.1,
-                                ),
+                          UserAvatar(
+                            name: user?.displayName ?? '',
+                            url: user?.avatarUrl,
+                            radius: 19,
                           ),
-                          if (username != null && username.isNotEmpty)
-                            Text(
-                              '@$username',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.labelMedium
-                                  ?.copyWith(
-                                    color: colors.onSurfaceVariant,
-                                    height: 1.1,
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  user?.displayName ?? '',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context).textTheme.titleSmall
+                                      ?.copyWith(
+                                        color: colors.onSurface,
+                                        fontWeight: FontWeight.w700,
+                                        height: 1.1,
+                                      ),
+                                ),
+                                if (username != null && username.isNotEmpty)
+                                  Text(
+                                    '@$username',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelMedium
+                                        ?.copyWith(
+                                          color: colors.onSurfaceVariant,
+                                          height: 1.1,
+                                        ),
+                                  )
+                                else
+                                  Text(
+                                    '$email',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelMedium
+                                        ?.copyWith(
+                                          color: colors.onSurfaceVariant,
+                                          height: 1.1,
+                                        ),
                                   ),
-                            )
-                          else
-                            Text(
-                              '$email',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.labelMedium
-                                  ?.copyWith(
-                                    color: colors.onSurfaceVariant,
-                                    height: 1.1,
-                                  ),
+                              ],
                             ),
+                          ),
                         ],
                       ),
                     ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              },
             ),
-          );
-        },
-      ),
       actions: [
         IconButton(
           tooltip: 'Search chats',
@@ -158,13 +206,21 @@ class _RoomsViewState extends State<_RoomsView> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 22),
                 child: Text(
-                  'Messages',
+                  widget.archived ? 'Archived Chats' : 'Messages',
                   style: Theme.of(context).textTheme.headlineSmall
                       ?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
               const SizedBox(height: 12),
-              if (state.loading) const LinearProgressIndicator(),
+              if (!widget.archived)
+                ListTile(
+                  leading: const Icon(Icons.archive_outlined),
+                  title: const Text('Archived Chats'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _navigate('/chats/archived'),
+                ),
+              if (state.loading && rooms.isEmpty)
+                const LinearProgressIndicator(),
               if (state.error != null)
                 Padding(
                   padding: const EdgeInsets.all(24),
@@ -180,10 +236,14 @@ class _RoomsViewState extends State<_RoomsView> {
                   ),
                 ),
               if (!state.loading && rooms.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(32),
+                Padding(
+                  padding: const EdgeInsets.all(32),
                   child: Center(
-                    child: Text('No conversations yet. Start a new message.'),
+                    child: Text(
+                      widget.archived
+                          ? 'No archived conversations.'
+                          : 'No conversations yet. Start a new message.',
+                    ),
                   ),
                 ),
               for (final room in rooms) ...[
@@ -203,7 +263,11 @@ class _RoomsViewState extends State<_RoomsView> {
                         : messageTime(room.lastMessageAt!),
                     avatarUrl: room.avatarUrl,
                     isGroup: room.isGroup,
+                    pinned: room.pinned,
+                    muted: room.muted,
+                    unread: room.unreadCount,
                   ),
+                  onLongPress: () => _actions(room),
                   onTap: () => _navigate(
                     '/conversation',
                     extra: Conversation.fromRoom(room),

@@ -124,6 +124,12 @@ class _ProfileView extends StatelessWidget {
                         title: const Text('My QR code'),
                         onTap: () => context.push('/my-qr'),
                       ),
+                      ListTile(
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        leading: const Icon(Icons.settings_outlined),
+                        title: const Text('Settings'),
+                        onTap: () => context.push('/profile/settings'),
+                      ),
                     ],
                   ),
                 ),

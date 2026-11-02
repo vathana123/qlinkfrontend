@@ -11,17 +11,26 @@ class ChatPreview {
     this.avatarUrl,
     this.online = false,
     this.isGroup = false,
+    this.pinned = false,
+    this.muted = false,
   });
   final String name, message, time;
   final String? avatarUrl;
   final int unread;
   final bool online, isGroup;
+  final bool pinned, muted;
 }
 
 class ChatListTile extends StatelessWidget {
-  const ChatListTile({super.key, required this.chat, required this.onTap});
+  const ChatListTile({
+    super.key,
+    required this.chat,
+    required this.onTap,
+    this.onLongPress,
+  });
   final ChatPreview chat;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -44,6 +53,7 @@ class ChatListTile extends StatelessWidget {
           minVerticalPadding: 12,
           horizontalTitleGap: 14,
           onTap: onTap,
+          onLongPress: onLongPress,
           leading: Stack(
             children: [
               if (chat.isGroup && chat.avatarUrl == null)
@@ -106,6 +116,26 @@ class ChatListTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 6),
+              if (chat.pinned || chat.muted)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (chat.pinned)
+                      Icon(
+                        Icons.push_pin,
+                        size: 14,
+                        color: colors.primary,
+                        semanticLabel: 'Pinned',
+                      ),
+                    if (chat.muted)
+                      Icon(
+                        Icons.notifications_off_outlined,
+                        size: 14,
+                        color: colors.onSurfaceVariant,
+                        semanticLabel: 'Muted',
+                      ),
+                  ],
+                ),
               if (chat.unread > 0)
                 Badge(
                   backgroundColor: colors.primary,

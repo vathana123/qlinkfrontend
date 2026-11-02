@@ -138,6 +138,12 @@ class _SearchViewState extends State<_SearchView> {
                       url: user.avatarUrl,
                     ),
                     title: Text(user.displayName),
+                    trailing: IconButton(
+                      tooltip: 'View profile',
+                      icon: const Icon(Icons.info_outline),
+                      onPressed: () =>
+                          context.push('/user-profile', extra: user),
+                    ),
                     subtitle: user.username == null
                         ? null
                         : Text('@${user.username}'),

@@ -5,7 +5,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:open_file/open_file.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../../data/models/chat_models.dart';
 import '../../data/repositories/chat_repository.dart';
@@ -178,23 +177,24 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
     final generation = _generation;
     bool current() => mounted && generation == _generation;
     final repository = context.read<ChatRepository>();
+    final media = repository.media;
+    final accountGeneration = media.generation;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final folder = await (await getTemporaryDirectory()).createTemp(
-        'qlink-download-',
+      final id = widget.message.fileId!;
+      media.track(id, widget.message.id, widget.roomId);
+      final file = await media.file(
+        id,
+        filename: widget.message.attachment!.originalName,
       );
-      final name = widget.message.attachment!.originalName.replaceAll(
-        RegExp(r'[\\/:*?"<>|]'),
-        '_',
+      if (!current() || accountGeneration != media.generation) return;
+      final result = await OpenFile.open(
+        file.path,
+        type: widget.message.attachment!.contentType,
       );
-      final path = '${folder.path}/$name';
-      if (!current()) return;
-      await repository.downloadFile(widget.message.fileId!, path, _cancel);
-      if (!current()) return;
-      final result = await OpenFile.open(path);
       if (result.type != ResultType.done) throw StateError(result.message);
     } catch (_) {
       if (current()) {

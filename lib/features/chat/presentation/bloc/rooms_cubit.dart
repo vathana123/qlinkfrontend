@@ -22,7 +22,8 @@ class RoomsState {
 }
 
 class RoomsCubit extends Cubit<RoomsState> {
-  RoomsCubit(this.repository) : super(const RoomsState()) {
+  RoomsCubit(this.repository, {this.archived = false})
+    : super(const RoomsState()) {
     _syncRequests = repository.syncRequests.listen(
       (_) => unawaited(synchronize()),
     );
@@ -32,6 +33,84 @@ class RoomsCubit extends Cubit<RoomsState> {
     });
   }
   final ChatRepository repository;
+  final bool archived;
+  final _pending = <String, ChatRoom>{};
+  bool isUpdating(String id) => _pending.containsKey(id);
+
+  Future<void> update(
+    ChatRoom room, {
+    bool? pinned,
+    bool? archived,
+    bool? muted,
+  }) async {
+    if (isUpdating(room.id)) return;
+    _revision++;
+    _pending[room.id] = room.withSettings(
+      pinned: pinned,
+      archived: archived,
+      muted: muted,
+    );
+    emit(
+      RoomsState(
+        items: _merge([_pending[room.id]!]),
+        hasMore: state.hasMore,
+        loading: state.loading,
+      ),
+    );
+    try {
+      final saved = await repository.roomSettings(
+        room.id,
+        pinned: pinned,
+        archived: archived,
+        muted: muted,
+      );
+      if (isClosed || !_pending.containsKey(room.id)) return;
+      final pending = _pending.remove(room.id);
+      _revision++;
+      // Apply only settings; realtime may have delivered a newer last message.
+      final latest =
+          state.items.where((r) => r.id == room.id).firstOrNull ??
+          pending ??
+          saved;
+      emit(
+        RoomsState(
+          items: _merge([
+            latest.withSettings(
+              pinned: saved.pinned,
+              archived: saved.archived,
+              muted: saved.muted,
+            ),
+          ]),
+          hasMore: state.hasMore,
+          loading: state.loading,
+        ),
+      );
+      repository.requestSynchronization(room.id);
+    } catch (e) {
+      if (isClosed || !_pending.containsKey(room.id)) return;
+      final pending = _pending.remove(room.id);
+      _revision++;
+      final latest =
+          state.items.where((r) => r.id == room.id).firstOrNull ??
+          pending ??
+          room;
+      emit(
+        RoomsState(
+          items: _merge([
+            latest.withSettings(
+              pinned: room.pinned,
+              archived: room.archived,
+              muted: room.muted,
+            ),
+          ]),
+          hasMore: state.hasMore,
+          loading: state.loading,
+          error: chatError(e),
+        ),
+      );
+    }
+  }
+
   late final StreamSubscription<String> _syncRequests;
   late final StreamSubscription<ChatEvent> _events;
   late final StreamSubscription<ChatConnection> _connections;
@@ -39,6 +118,7 @@ class RoomsCubit extends Cubit<RoomsState> {
   int _revision = 0;
   bool _refreshQueued = false;
   int _compare(ChatRoom a, ChatRoom b) {
+    if (a.pinned != b.pinned) return a.pinned ? -1 : 1;
     final time = (b.lastMessageAt ?? DateTime.fromMillisecondsSinceEpoch(0))
         .compareTo(a.lastMessageAt ?? DateTime.fromMillisecondsSinceEpoch(0));
     return time != 0 ? time : b.id.compareTo(a.id);
@@ -52,7 +132,15 @@ class RoomsCubit extends Cubit<RoomsState> {
   }) {
     final all = {for (final room in state.items) room.id: room};
     for (var room in incoming) {
-      final old = all[room.id];
+      final pending = _pending[room.id];
+      if (pending != null) {
+        room = room.withSettings(
+          pinned: pending.pinned,
+          archived: pending.archived,
+          muted: pending.muted,
+        );
+      }
+      final old = all[room.id] ?? pending;
       if (!authoritative &&
           old?.lastMessage != null &&
           !_hiddenIds.contains(old!.lastMessage!.id) &&
@@ -73,15 +161,21 @@ class RoomsCubit extends Cubit<RoomsState> {
         );
       }
       all[room.id] = room;
+      if (pending != null) _pending[room.id] = room;
     }
     final ids = incoming.map((r) => r.id).toSet();
-    return all.values.where((r) => !replace || ids.contains(r.id)).toList()
+    return all.values
+        .where(
+          (r) => r.archived == archived && (!replace || ids.contains(r.id)),
+        )
+        .toList()
       ..sort(_compare);
   }
 
   void _received(ChatEvent event) {
     _revision++;
     if (event.type == 'GROUP_REMOVED') {
+      _pending.remove(event.roomId);
       emit(
         RoomsState(
           loading: state.loading,
@@ -91,7 +185,8 @@ class RoomsCubit extends Cubit<RoomsState> {
       );
       return;
     }
-    if (event.type == 'GROUP_UPDATED') {
+    if (event.type == 'GROUP_UPDATED' ||
+        event.type == 'ROOM_SETTINGS_UPDATED') {
       if (event.room != null) {
         emit(
           RoomsState(
@@ -139,7 +234,7 @@ class RoomsCubit extends Cubit<RoomsState> {
     emit(RoomsState(items: state.items, loading: true, hasMore: state.hasMore));
     final revision = _revision;
     try {
-      final result = await repository.rooms(page: _page);
+      final result = await repository.rooms(page: _page, archived: archived);
       if (isClosed) return;
       if (revision != _revision) {
         _refreshQueued = true;
@@ -178,7 +273,7 @@ class RoomsCubit extends Cubit<RoomsState> {
       final revision = _revision;
       final fetchedRooms = <ChatRoom>[];
       for (int page = 0; page < count; page++) {
-        result = await repository.rooms(page: page);
+        result = await repository.rooms(page: page, archived: archived);
         if (isClosed) return;
         fetched++;
         fetchedRooms.addAll(result.items);

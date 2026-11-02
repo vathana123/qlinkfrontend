@@ -274,6 +274,11 @@ class ChatRoom {
     this.myRole,
     this.membersCanSend = true,
     this.membersCanInvite = false,
+    this.personalCanSend = true,
+    this.pinned = false,
+    this.archived = false,
+    this.muted = false,
+    this.unreadCount = 0,
     this.messageHistoryVisibility = 'VIEW_ALL_MESSAGES',
   });
   final String id;
@@ -283,11 +288,35 @@ class ChatRoom {
   final int? memberCount;
   final String? groupAvatarUrl, description, myRole;
   final bool membersCanSend, membersCanInvite;
+  final bool personalCanSend;
+  final bool pinned, archived, muted;
+  final int unreadCount;
+  ChatRoom withSettings({bool? pinned, bool? archived, bool? muted}) =>
+      ChatRoom(
+        id,
+        participant,
+        lastMessage: lastMessage,
+        lastMessageAt: lastMessageAt,
+        type: type,
+        name: name,
+        memberCount: memberCount,
+        groupAvatarUrl: groupAvatarUrl,
+        description: description,
+        myRole: myRole,
+        membersCanSend: membersCanSend,
+        membersCanInvite: membersCanInvite,
+        personalCanSend: personalCanSend,
+        messageHistoryVisibility: messageHistoryVisibility,
+        pinned: pinned ?? this.pinned,
+        archived: archived ?? this.archived,
+        muted: muted ?? this.muted,
+        unreadCount: unreadCount,
+      );
   final String messageHistoryVisibility;
   bool get isOwner => myRole == 'OWNER';
   bool get canManage => isOwner || myRole == 'CO_OWNER';
   bool get canInvite => canManage || membersCanInvite;
-  bool get canSend => !isGroup || canManage || membersCanSend;
+  bool get canSend => isGroup ? canManage || membersCanSend : personalCanSend;
   bool get isGroup => type != 'PERSONAL';
   String get title => isGroup
       ? name ?? 'Group'
@@ -306,6 +335,11 @@ class ChatRoom {
     myRole: myRole,
     membersCanSend: membersCanSend,
     membersCanInvite: membersCanInvite,
+    personalCanSend: personalCanSend,
+    pinned: pinned,
+    archived: archived,
+    muted: muted,
+    unreadCount: unreadCount,
     messageHistoryVisibility: messageHistoryVisibility,
     lastMessage: message,
     lastMessageAt: message.createdAt,
@@ -323,6 +357,11 @@ class ChatRoom {
     myRole: j['myRole'] as String?,
     membersCanSend: j['membersCanSend'] as bool? ?? true,
     membersCanInvite: j['membersCanInvite'] as bool? ?? false,
+    personalCanSend: j['canSend'] as bool? ?? true,
+    pinned: j['pinned'] == true,
+    archived: j['archived'] == true,
+    muted: j['muted'] == true,
+    unreadCount: j['unreadCount'] as int? ?? 0,
     messageHistoryVisibility:
         j['messageHistoryVisibility'] as String? ?? 'VIEW_ALL_MESSAGES',
     lastMessage: j['lastMessage'] == null
@@ -339,6 +378,7 @@ class Conversation {
     this.groupName,
     this.memberCount,
     this.groupRoom,
+    this.canMessage = true,
   });
   factory Conversation.fromRoom(ChatRoom room) => Conversation(
     room.participant,
@@ -346,8 +386,10 @@ class Conversation {
     groupName: room.isGroup ? room.title : null,
     memberCount: room.memberCount,
     groupRoom: room.isGroup ? room : null,
+    canMessage: room.canSend,
   );
   final PublicUser? recipient;
+  final bool canMessage;
   final ChatRoom? groupRoom;
   final String? groupName;
   final int? memberCount;

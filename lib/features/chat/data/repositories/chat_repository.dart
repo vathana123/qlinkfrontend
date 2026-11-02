@@ -11,13 +11,14 @@ import 'private_media_cache.dart';
 import 'voice_playback_controller.dart';
 import '../realtime/chat_event.dart';
 import '../realtime/chat_realtime.dart';
+import '../realtime/activity_event.dart';
 import '../models/chat_models.dart';
 import '../models/search_models.dart';
 
 class ChatRepository {
   ChatRepository(
     this.api, {
-    ChatRealtime? realtime,
+    this.realtime,
     OutboxStore? outboxStore,
     Stream<ChatEvent>? events,
     Stream<ChatConnection>? connections,
@@ -25,6 +26,7 @@ class ChatRepository {
   }) : outboxStore = outboxStore ?? MemoryOutboxStore(),
        events = events ?? realtime?.events ?? const Stream.empty(),
        connections = connections ?? realtime?.states ?? const Stream.empty() {
+    _activitySubscription = realtime?.activity.listen(_activityUpdates.add);
     media = PrivateMediaCache(api.dio, directory: mediaDirectory);
     _mediaEvents = this.events.listen((event) {
       if (event.type == 'GROUP_REMOVED') media.invalidateRoom(event.roomId);
@@ -44,6 +46,58 @@ class ChatRepository {
     });
   }
   final Stream<ChatEvent> events;
+  final ChatRealtime? realtime;
+  final _activityUpdates = StreamController<ActivityEvent>.broadcast();
+  StreamSubscription<ActivityEvent>? _activitySubscription;
+  Stream<ActivityEvent> get activity => _activityUpdates.stream;
+  Future<Map<String, dynamic>> privacyRequest(
+    String path,
+    String account, {
+    String method = 'GET',
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? query,
+  }) async {
+    final response = await api.dio.request<dynamic>(
+      '/api/v1/users/$path',
+      data: data,
+      queryParameters: query,
+      options: Options(method: method, extra: {'expectedAccountId': account}),
+    );
+    return Map<String, dynamic>.from((response.data as Map)['data'] as Map);
+  }
+
+  Future<Map<String, dynamic>> relationship(String user, String account) =>
+      privacyRequest('$user/relationship', account);
+  Future<Map<String, dynamic>> setBlocked(
+    String user,
+    bool blocked,
+    String account,
+  ) async {
+    final result = await privacyRequest(
+      'me/blocks/$user',
+      account,
+      method: blocked ? 'PUT' : 'DELETE',
+    );
+    if (_account == account) {
+      _activityUpdates.add(
+        ActivityEvent(
+          'PERMISSIONS',
+          user,
+          canMessage: result['canMessage'] == true,
+        ),
+      );
+      _activityUpdates.add(ActivityEvent('PRESENCE', user));
+    }
+    return result;
+  }
+
+  void watchPresence(String user, bool enabled, {String? account}) =>
+      realtime?.watch(user, enabled, account: account);
+  void typing(String room, bool active, {String? account}) =>
+      realtime?.sendActivity('typing', {
+        'roomId': room,
+        'typing': active,
+      }, account: account);
   final Stream<ChatConnection> connections;
   final _syncRequests = StreamController<String>.broadcast();
   Stream<String> get syncRequests => _syncRequests.stream;
@@ -255,6 +309,8 @@ class ChatRepository {
   }
 
   Future<void> dispose() async {
+    await _activitySubscription?.cancel();
+    await _activityUpdates.close();
     setAccount(null);
     _receiptRetry?.cancel();
     _receiptCancel.cancel();
@@ -273,16 +329,33 @@ class ChatRepository {
     return photo.bytes;
   }
 
-  Future<void> downloadFile(
-    String fileId,
-    String path,
-    CancelToken cancel,
-  ) async {
-    await api.dio.download(
-      '/api/v1/storage/files/$fileId/download',
-      path,
-      cancelToken: cancel,
+  Future<MessagePage> sharedMedia(
+    String room,
+    String category, {
+    String? cursor,
+    CancelToken? cancelToken,
+  }) async {
+    final account = _account;
+    final generation = media.generation;
+    final response = await api.dio.get<dynamic>(
+      '/api/v1/chat/rooms/$room/media',
+      queryParameters: {'category': category, 'size': 30, 'cursor': ?cursor},
+      options: Options(extra: {'expectedAccountId': ?account}),
+      cancelToken: cancelToken,
     );
+    if (_account != account || media.generation != generation) {
+      throw StateError('Account changed');
+    }
+    final data = response.data['data'] as Map;
+    final items = (data['items'] as List)
+        .map((v) => ChatMessage.fromJson(Map<String, dynamic>.from(v as Map)))
+        .toList();
+    for (final message in items) {
+      if (message.fileId != null && !message.hidden && !message.deleted) {
+        media.track(message.fileId!, message.id, room);
+      }
+    }
+    return MessagePage(items, data['nextCursor'] as String?);
   }
 
   Future<ResultPage<PublicUser>> search(String keyword, {int page = 0}) async {
@@ -359,8 +432,42 @@ class ChatRepository {
     );
   }
 
-  Future<ResultPage<ChatRoom>> rooms({int page = 0}) async {
-    final j = await api.get('chat/rooms', {'page': page, 'size': 20});
+  Future<ChatRoom> roomSettings(
+    String id, {
+    bool? pinned,
+    bool? archived,
+    bool? muted,
+  }) async {
+    final account = _account;
+    final generation = media.generation;
+    final response = await api.dio.put<dynamic>(
+      '/api/v1/chat/rooms/$id/${muted == null ? 'settings' : 'notifications'}',
+      data: muted == null
+          ? {'pinned': ?pinned, 'archived': ?archived}
+          : {'muted': muted},
+      options: Options(extra: {'expectedAccountId': ?account}),
+    );
+    if (_account != account || media.generation != generation) {
+      throw StateError('Account changed');
+    }
+    if (muted == null) {
+      return ChatRoom.fromJson(
+        Map<String, dynamic>.from(response.data['data'] as Map),
+      );
+    }
+    final room = await roomById(id);
+    if (_account != account || media.generation != generation) {
+      throw StateError('Account changed');
+    }
+    return room;
+  }
+
+  Future<ResultPage<ChatRoom>> rooms({int page = 0, bool? archived}) async {
+    final j = await api.get('chat/rooms', {
+      'page': page,
+      'size': 20,
+      'archived': ?archived,
+    });
     return ResultPage(
       (j['content'] as List)
           .map((v) => ChatRoom.fromJson(v as Map<String, dynamic>))
