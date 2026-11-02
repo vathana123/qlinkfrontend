@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class ThemeCubit extends Cubit<ThemeMode> {
   ThemeCubit(this._preferences) : super(_read(_preferences));
   final SharedPreferences _preferences;
+  SharedPreferences get preferences => _preferences;
   static const preferenceKey = 'qlink.theme';
   static ThemeMode _read(SharedPreferences preferences) =>
       switch (preferences.getString(preferenceKey)) {

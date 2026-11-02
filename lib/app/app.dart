@@ -23,6 +23,9 @@ import '../features/chat/data/repositories/chat_repository.dart';
 import '../features/chat/data/datasources/chat_api.dart';
 import 'theme/app_theme.dart';
 import 'theme/theme_cubit.dart';
+import '../features/chat/data/repositories/chat_appearance_store.dart';
+import '../features/chat/presentation/bloc/chat_appearance_cubit.dart';
+import '../features/chat/presentation/theme/chat_appearance.dart';
 
 class QLinkApp extends StatefulWidget {
   const QLinkApp({
@@ -58,6 +61,9 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
     outboxStore: widget.outboxStore,
   );
   late final StreamSubscription<AuthState> _chatSession;
+  late final _appearance = ChatAppearanceCubit(
+    ChatAppearanceStore(widget.theme.preferences),
+  );
   late final RouterRefresh _refresh = RouterRefresh(widget.auth);
   late final GoRouter _router = createRouter(widget.auth, _refresh);
   RealtimeSession? _session;
@@ -115,12 +121,14 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _chat.setAccount(widget.auth.state.user?.id);
+    _appearance.setAccount(widget.auth.state.user?.id);
     _shares.start();
     _shareChanges = _shares.changes.listen((_) => unawaited(_checkShare()));
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => unawaited(_checkShare()),
     );
     _chatSession = widget.auth.stream.listen((state) {
+      _appearance.setAccount(state.user?.id);
       _chat.setAccount(state.user?.id);
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => unawaited(_checkShare()),
@@ -153,6 +161,7 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
     if (_push != null) unawaited(_push!.dispose());
     unawaited(_chatSession.cancel());
     unawaited(_chat.dispose());
+    unawaited(_appearance.close());
     _router.dispose();
     _refresh.dispose();
     widget.auth.close();
@@ -167,6 +176,7 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
       providers: [
         BlocProvider.value(value: widget.auth),
         BlocProvider.value(value: widget.theme),
+        BlocProvider.value(value: _appearance),
       ],
       child: BlocListener<AuthBloc, AuthState>(
         listener: (context, state) {
@@ -204,7 +214,19 @@ class _QLinkAppState extends State<QLinkApp> with WidgetsBindingObserver {
                               ? Brightness.light
                               : Brightness.dark,
                         ),
-                child: child!,
+                child: BlocBuilder<ChatAppearanceCubit, ChatAppearanceState>(
+                  buildWhen: (old, next) => old.appearance != next.appearance,
+                  builder: (context, state) => Theme(
+                    data: Theme.of(context).copyWith(
+                      extensions: [
+                        ...Theme.of(context).extensions.values
+                            .where((e) => e is! ChatAppearance),
+                        state.appearance,
+                      ],
+                    ),
+                    child: child!,
+                  ),
+                ),
               );
             },
           ),

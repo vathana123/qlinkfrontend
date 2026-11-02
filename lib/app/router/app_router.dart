@@ -2,6 +2,7 @@ import '../../features/chat/presentation/screens/share_screen.dart';
 import '../../features/chat/presentation/screens/shared_media_screen.dart';
 import '../../features/chat/presentation/screens/storage_screen.dart';
 import '../../features/chat/presentation/screens/chat_info_screen.dart';
+import '../../features/chat/presentation/screens/chat_appearance_screen.dart';
 
 import 'dart:async';
 
@@ -118,6 +119,14 @@ GoRouter createRouter(AuthBloc auth, RouterRefresh refresh) => GoRouter(
       builder: (_, _) => const HomeScreen(archived: true),
     ),
     GoRoute(path: '/profile', builder: (_, _) => const UserProfileScreen()),
+    GoRoute(
+      path: '/profile/appearance',
+      builder: (_, _) => const AppearanceScreen(),
+    ),
+    GoRoute(
+      path: '/profile/appearance/chat',
+      builder: (_, _) => const ChatAppearanceScreen(),
+    ),
     GoRoute(
       path: '/profile/settings',
       builder: (_, _) => const SettingsScreen(),
