@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../features/chat/presentation/theme/chat_appearance.dart';
+
 abstract final class AppTheme {
   static ThemeData get light => _build(Brightness.light);
   static ThemeData get dark => _build(Brightness.dark);
@@ -35,6 +37,7 @@ abstract final class AppTheme {
         : seeded;
     return ThemeData(
       useMaterial3: true,
+      extensions: const [ChatAppearance()],
       colorScheme: colors,
       scaffoldBackgroundColor: dark
           ? colors.surfaceContainerLowest

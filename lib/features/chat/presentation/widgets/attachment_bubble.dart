@@ -9,6 +9,7 @@ import 'package:open_file/open_file.dart';
 import '../../data/models/chat_models.dart';
 import '../../data/repositories/chat_repository.dart';
 import '../../data/repositories/private_media_cache.dart';
+import '../theme/chat_appearance.dart';
 
 String readableFileSize(int bytes) => bytes < 1024
     ? '$bytes B'
@@ -297,7 +298,9 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
             InkWell(
               onTap: _image != null || m.isConfirmed ? _preview : null,
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(
+                  ChatAppearance.of(context).mediaRadius,
+                ),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
                     maxWidth: 320,
@@ -361,7 +364,7 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Row(
                   children: [
-                    Icon(_icon, color: colors.primary),
+                    Icon(_icon),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -377,7 +380,7 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     else
-                      Icon(Icons.download_outlined, color: colors.primary),
+                      const Icon(Icons.download_outlined),
                   ],
                 ),
               ),
@@ -385,7 +388,9 @@ class _AttachmentBubbleState extends State<AttachmentBubble> {
           if (metadata != null && !image)
             Text(
               readableFileSize(metadata.sizeBytes),
-              style: Theme.of(context).textTheme.labelSmall,
+              style: TextStyle(
+                fontSize: ChatAppearance.of(context).captionFontSize,
+              ),
             ),
           if (_error != null)
             TextButton(

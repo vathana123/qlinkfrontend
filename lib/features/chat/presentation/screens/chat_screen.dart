@@ -21,6 +21,9 @@ import '../widgets/voice_input.dart';
 import '../widgets/attachment_button.dart';
 import '../widgets/attachment_bubble.dart';
 import '../widgets/voice_bubble.dart';
+import '../widgets/chat_bubble.dart';
+import '../widgets/chat_background.dart';
+import '../theme/chat_appearance.dart';
 
 class ChatScreen extends StatelessWidget {
   const ChatScreen({
@@ -285,58 +288,60 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!message.deleted && !message.hidden) ...[
-              Wrap(
-                children: [
-                  for (final emoji in reactionEmoji)
-                    IconButton(
-                      tooltip: 'React $emoji',
-                      onPressed: () => Navigator.pop(context, 'react:$emoji'),
-                      icon: Text(emoji, style: const TextStyle(fontSize: 24)),
-                    ),
-                ],
-              ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!message.deleted && !message.hidden) ...[
+                Wrap(
+                  children: [
+                    for (final emoji in reactionEmoji)
+                      IconButton(
+                        tooltip: 'React $emoji',
+                        onPressed: () => Navigator.pop(context, 'react:$emoji'),
+                        icon: Text(emoji, style: const TextStyle(fontSize: 24)),
+                      ),
+                  ],
+                ),
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.forward),
+                  title: const Text('Forward'),
+                  onTap: () => Navigator.pop(context, 'forward'),
+                ),
+              ],
+              if (!message.deleted && cubit.state.canSend)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.reply),
+                  title: const Text('Reply'),
+                  onTap: () => Navigator.pop(context, 'reply'),
+                ),
+              if (!message.deleted &&
+                  message.type == 'TEXT' &&
+                  cubit.state.canSend &&
+                  message.senderId == cubit.senderId)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.edit_outlined),
+                  title: const Text('Edit'),
+                  onTap: () => Navigator.pop(context, 'edit'),
+                ),
               ListTile(
                 dense: true,
-                leading: const Icon(Icons.forward),
-                title: const Text('Forward'),
-                onTap: () => Navigator.pop(context, 'forward'),
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Delete for Me'),
+                onTap: () => Navigator.pop(context, 'me'),
               ),
+              if (message.canDeleteForEveryone)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.delete_forever_outlined),
+                  title: const Text('Delete for Everyone'),
+                  onTap: () => Navigator.pop(context, 'everyone'),
+                ),
             ],
-            if (!message.deleted && cubit.state.canSend)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.reply),
-                title: const Text('Reply'),
-                onTap: () => Navigator.pop(context, 'reply'),
-              ),
-            if (!message.deleted &&
-                message.type == 'TEXT' &&
-                cubit.state.canSend &&
-                message.senderId == cubit.senderId)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.edit_outlined),
-                title: const Text('Edit'),
-                onTap: () => Navigator.pop(context, 'edit'),
-              ),
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete for Me'),
-              onTap: () => Navigator.pop(context, 'me'),
-            ),
-            if (message.canDeleteForEveryone)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.delete_forever_outlined),
-                title: const Text('Delete for Everyone'),
-                onTap: () => Navigator.pop(context, 'everyone'),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -548,418 +553,381 @@ class _ChatViewState extends State<_ChatView> with WidgetsBindingObserver {
           // ),
         ],
       ),
-      body: SafeArea(
-        top: false,
-        child: BlocConsumer<ChatCubit, ChatState>(
-          buildWhen: (a, b) =>
-              (a.presence == b.presence && a.typing == b.typing) ||
-              a.messages != b.messages ||
-              a.loading != b.loading ||
-              a.error != b.error ||
-              a.canSend != b.canSend ||
-              a.group != b.group ||
-              a.cursor != b.cursor ||
-              a.contextMessageId != b.contextMessageId,
-          listenWhen: (previous, current) =>
-              previous.messages != current.messages ||
-              previous.removed != current.removed,
-          listener: (context, state) {
-            if (state.removed && _search != null) _toggleSearch();
-            final visibleIds = state.messages.map((m) => m.id).toSet();
-            _messageKeys.removeWhere((id, _) => !visibleIds.contains(id));
-            unawaited(_loadNotificationSettings());
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) _scheduleSeen();
-            });
-            if (_editing != null &&
-                (state.removed ||
-                    !state.messages.any(
-                      (m) => m.id == _editing!.id && !m.deleted,
-                    ))) {
-              _cancelEdit();
-            }
-            if (_jumping ||
-                state.contextMessageId != null ||
-                !_scroll.hasClients ||
-                _scroll.offset > 100) {
-              return;
-            }
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted &&
-                  !_jumping &&
-                  _scroll.hasClients &&
-                  _scroll.offset <= 100) {
-                _scroll.animateTo(
-                  0,
-                  duration: const Duration(milliseconds: 180),
-                  curve: Curves.easeOut,
-                );
+      body: ChatBackground(
+        child: SafeArea(
+          top: false,
+          child: BlocConsumer<ChatCubit, ChatState>(
+            buildWhen: (a, b) =>
+                (a.presence == b.presence && a.typing == b.typing) ||
+                a.messages != b.messages ||
+                a.loading != b.loading ||
+                a.error != b.error ||
+                a.canSend != b.canSend ||
+                a.group != b.group ||
+                a.cursor != b.cursor ||
+                a.contextMessageId != b.contextMessageId,
+            listenWhen: (previous, current) =>
+                previous.messages != current.messages ||
+                previous.removed != current.removed,
+            listener: (context, state) {
+              if (state.removed && _search != null) _toggleSearch();
+              final visibleIds = state.messages.map((m) => m.id).toSet();
+              _messageKeys.removeWhere((id, _) => !visibleIds.contains(id));
+              unawaited(_loadNotificationSettings());
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _scheduleSeen();
+              });
+              if (_editing != null &&
+                  (state.removed ||
+                      !state.messages.any(
+                        (m) => m.id == _editing!.id && !m.deleted,
+                      ))) {
+                _cancelEdit();
               }
-            });
-          },
-          builder: (context, state) {
-            final indices = {
-              for (var i = 0; i < state.messages.length; i++)
-                chatMessageKey(state.messages[i]): i,
-            };
-            return Column(
-              children: [
-                if (_search != null && !state.removed)
-                  Padding(
-                    padding: EdgeInsets.only(
-                      top: MediaQuery.paddingOf(context).top + kToolbarHeight,
-                    ),
-                    child: SizedBox(
-                      height:
-                          ((MediaQuery.sizeOf(context).height -
-                                      MediaQuery.viewInsetsOf(context).bottom) *
-                                  .4)
-                              .clamp(150, 280),
-                      child: BlocProvider.value(
-                        value: _search!,
-                        child: ChatSearchPanel(
-                          onClose: _toggleSearch,
-                          onMessage: (match) =>
-                              _jumpToSearchMessage(match.message.id),
+              if (_jumping ||
+                  state.contextMessageId != null ||
+                  !_scroll.hasClients ||
+                  _scroll.offset > 100) {
+                return;
+              }
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted &&
+                    !_jumping &&
+                    _scroll.hasClients &&
+                    _scroll.offset <= 100) {
+                  _scroll.animateTo(
+                    0,
+                    duration: const Duration(milliseconds: 180),
+                    curve: Curves.easeOut,
+                  );
+                }
+              });
+            },
+            builder: (context, state) {
+              final indices = {
+                for (var i = 0; i < state.messages.length; i++)
+                  chatMessageKey(state.messages[i]): i,
+              };
+              return Column(
+                children: [
+                  if (_search != null && !state.removed)
+                    Padding(
+                      padding: EdgeInsets.only(
+                        top: MediaQuery.paddingOf(context).top + kToolbarHeight,
+                      ),
+                      child: SizedBox(
+                        height:
+                            ((MediaQuery.sizeOf(context).height -
+                                        MediaQuery.viewInsetsOf(context)
+                                            .bottom) *
+                                    .4)
+                                .clamp(150, 280),
+                        child: BlocProvider.value(
+                          value: _search!,
+                          child: ChatSearchPanel(
+                            onClose: _toggleSearch,
+                            onMessage: (match) =>
+                                _jumpToSearchMessage(match.message.id),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                if (conversation.isGroup && conversation.memberCount != null)
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Text(
-                      '${state.group?.memberCount ?? conversation.memberCount} members',
+                  if (conversation.isGroup && conversation.memberCount != null)
+                    Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Text(
+                        '${state.group?.memberCount ?? conversation.memberCount} members',
+                      ),
                     ),
-                  ),
-                if (state.error != null)
-                  Padding(
-                    padding: const EdgeInsets.all(8),
-                    child: Text(
-                      state.error!,
-                      style: TextStyle(color: colors.error),
+                  if (state.error != null)
+                    Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Text(
+                        state.error!,
+                        style: TextStyle(color: colors.error),
+                      ),
                     ),
-                  ),
-                if (state.loading) const LinearProgressIndicator(),
-                Expanded(
-                  child: state.messages.isEmpty
-                      ? Center(
-                          child: state.cursor != null
-                              ? TextButton(
-                                  onPressed: state.loading
-                                      ? null
-                                      : () => context.read<ChatCubit>().load(),
-                                  child: const Text('Load older messages'),
-                                )
-                              : Text(
-                                  state.roomId == null
-                                      ? 'Say hello to ${conversation.title}'
-                                      : 'No messages yet',
-                                ),
-                        )
-                      : ListView.builder(
-                          key: _listKey,
-                          controller: _scroll,
-                          reverse: true,
-                          padding: EdgeInsets.only(
-                            top: _search != null
-                                ? 16
-                                : MediaQuery.paddingOf(context).top +
-                                      kToolbarHeight +
-                                      16,
-                            bottom: MediaQuery.paddingOf(context).bottom + 24,
-                            left: 12,
-                            right: 12,
-                          ),
-                          itemCount: state.messages.length + 1,
-                          findChildIndexCallback: (key) => indices[key],
-                          itemBuilder: (context, index) {
-                            if (index == state.messages.length) {
-                              return Center(
-                                child: state.cursor != null
-                                    ? TextButton(
-                                        onPressed: state.loading
-                                            ? null
-                                            : () => context
-                                                  .read<ChatCubit>()
-                                                  .load(),
-                                        child: const Text(
-                                          'Load older messages',
-                                        ),
-                                      )
-                                    : const SizedBox.shrink(),
-                              );
-                            }
-                            final message = state.messages[index];
-                            final mine =
-                                message.senderId ==
-                                context.read<AuthBloc>().state.user?.id;
-                            return Align(
-                              key: chatMessageKey(message),
-                              alignment: mine
-                                  ? Alignment.centerRight
-                                  : Alignment.centerLeft,
-                              child: GestureDetector(
-                                key: _messageKeys.putIfAbsent(
-                                  message.id,
-                                  () => GlobalKey(),
-                                ),
-                                onLongPress: () => _actions(message),
-                                child: Container(
-                                  margin: const EdgeInsets.symmetric(
-                                    vertical: 4,
+                  if (state.loading) const LinearProgressIndicator(),
+                  Expanded(
+                    child: state.messages.isEmpty
+                        ? Center(
+                            child: state.cursor != null
+                                ? TextButton(
+                                    onPressed: state.loading
+                                        ? null
+                                        : () =>
+                                              context.read<ChatCubit>().load(),
+                                    child: const Text('Load older messages'),
+                                  )
+                                : Text(
+                                    state.roomId == null
+                                        ? 'Say hello to ${conversation.title}'
+                                        : 'No messages yet',
                                   ),
-                                  padding: message.type == 'IMAGE'
-                                      ? const EdgeInsets.all(4)
-                                      : const EdgeInsets.fromLTRB(
-                                          14,
-                                          10,
-                                          14,
-                                          8,
-                                        ),
-                                  constraints: BoxConstraints(
-                                    maxWidth:
-                                        (MediaQuery.sizeOf(context).width * .82)
-                                            .clamp(0.0, 560.0),
+                          )
+                        : ListView.builder(
+                            key: _listKey,
+                            controller: _scroll,
+                            reverse: true,
+                            padding: EdgeInsets.only(
+                              top: _search != null
+                                  ? 16
+                                  : MediaQuery.paddingOf(context).top +
+                                        kToolbarHeight +
+                                        16,
+                              bottom: MediaQuery.paddingOf(context).bottom + 24,
+                              left: 12,
+                              right: 12,
+                            ),
+                            itemCount: state.messages.length + 1,
+                            findChildIndexCallback: (key) => indices[key],
+                            itemBuilder: (context, index) {
+                              if (index == state.messages.length) {
+                                return Center(
+                                  child: state.cursor != null
+                                      ? TextButton(
+                                          onPressed: state.loading
+                                              ? null
+                                              : () => context
+                                                    .read<ChatCubit>()
+                                                    .load(),
+                                          child: const Text(
+                                            'Load older messages',
+                                          ),
+                                        )
+                                      : const SizedBox.shrink(),
+                                );
+                              }
+                              final message = state.messages[index];
+                              final mine =
+                                  message.senderId ==
+                                  context.read<AuthBloc>().state.user?.id;
+                              return Align(
+                                key: chatMessageKey(message),
+                                alignment: mine
+                                    ? Alignment.centerRight
+                                    : Alignment.centerLeft,
+                                child: GestureDetector(
+                                  key: _messageKeys.putIfAbsent(
+                                    message.id,
+                                    () => GlobalKey(),
                                   ),
-                                  decoration: BoxDecoration(
-                                    border: message.id == _highlight
-                                        ? Border.all(
-                                            color: colors.primary,
-                                            width: 2,
+                                  onLongPress: () => _actions(message),
+                                  child: ChatBubble(
+                                    outgoing: mine,
+                                    image: message.type == 'IMAGE',
+                                    highlighted: message.id == _highlight,
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
+                                      children: [
+                                        if (conversation.isGroup && !mine)
+                                          Text(
+                                            message.senderDisplayName ??
+                                                'qLink member',
+                                            style: TextStyle(
+                                              color: colors.primary,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        if (message.forwarded &&
+                                            !message.deleted)
+                                          const Text(
+                                            'Forwarded',
+                                            style: TextStyle(
+                                              fontStyle: FontStyle.italic,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        if (message.reply != null)
+                                          _quote(message.reply!),
+                                        if (message.deleted)
+                                          const Text(
+                                            'Message deleted',
+                                            style: TextStyle(
+                                              fontStyle: FontStyle.italic,
+                                            ),
                                           )
-                                        : Border.all(
-                                            color: colors.outlineVariant
-                                                .withValues(alpha: .35),
+                                        else if (message.isVoice)
+                                          VoiceBubble(
+                                            message: message,
+                                            roomId: state.roomId,
+                                          )
+                                        else if (message.isAttachment)
+                                          AttachmentBubble(
+                                            message: message,
+                                            roomId: state.roomId,
+                                          )
+                                        else
+                                          Text(message.content),
+                                        if (!message.deleted &&
+                                            message.reactions.isNotEmpty)
+                                          Wrap(
+                                            spacing: 4,
+                                            children: [
+                                              for (final reaction
+                                                  in message.reactions)
+                                                FilterChip(
+                                                  label: Text(
+                                                    '${reaction.emoji} ${reaction.count}',
+                                                  ),
+                                                  selected: reaction.selected,
+                                                  visualDensity:
+                                                      VisualDensity.compact,
+                                                  showCheckmark: false,
+                                                  onSelected: (_) => context
+                                                      .read<ChatCubit>()
+                                                      .react(
+                                                        message,
+                                                        reaction.emoji,
+                                                      ),
+                                                ),
+                                            ],
                                           ),
-                                    color: mine
-                                        ? colors.primaryContainer
-                                        : colors.surfaceContainer,
-                                    borderRadius: BorderRadius.only(
-                                      topLeft: const Radius.circular(20),
-                                      topRight: const Radius.circular(20),
-                                      bottomLeft: Radius.circular(
-                                        mine ? 20 : 6,
-                                      ),
-                                      bottomRight: Radius.circular(
-                                        mine ? 6 : 20,
-                                      ),
-                                    ),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      if (conversation.isGroup && !mine)
+                                        const SizedBox(height: 4),
                                         Text(
-                                          message.senderDisplayName ??
-                                              'qLink member',
-                                          style: TextStyle(
-                                            color: colors.primary,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      if (message.forwarded && !message.deleted)
-                                        const Text(
-                                          'Forwarded',
-                                          style: TextStyle(
-                                            fontStyle: FontStyle.italic,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      if (message.reply != null)
-                                        _quote(message.reply!),
-                                      if (message.deleted)
-                                        const Text(
-                                          'Message deleted',
-                                          style: TextStyle(
-                                            fontStyle: FontStyle.italic,
-                                          ),
-                                        )
-                                      else if (message.isVoice)
-                                        VoiceBubble(
-                                          message: message,
-                                          roomId: state.roomId,
-                                        )
-                                      else if (message.isAttachment)
-                                        AttachmentBubble(
-                                          message: message,
-                                          roomId: state.roomId,
-                                        )
-                                      else
-                                        Text(
-                                          message.content,
+                                          '${messageTime(message.displayTime)}${message.editedAt != null && !message.deleted ? ' · Edited' : ''}${mine ? ' · ${message.statusText}' : ''}',
                                           style: Theme.of(context)
                                               .textTheme
-                                              .bodyLarge
+                                              .labelSmall
                                               ?.copyWith(
-                                                height: 1.4,
-                                                color: mine
-                                                    ? colors.onPrimaryContainer
-                                                    : colors.onSurface,
+                                                fontSize: ChatAppearance.of(
+                                                  context,
+                                                ).captionFontSize,
+                                                color:
+                                                    ChatAppearance.of(context)
+                                                        .foreground(
+                                                          Theme.of(context),
+                                                          outgoing: mine,
+                                                        ),
                                               ),
                                         ),
-                                      if (!message.deleted &&
-                                          message.reactions.isNotEmpty)
-                                        Wrap(
-                                          spacing: 4,
-                                          children: [
-                                            for (final reaction
-                                                in message.reactions)
-                                              FilterChip(
-                                                label: Text(
-                                                  '${reaction.emoji} ${reaction.count}',
-                                                ),
-                                                selected: reaction.selected,
-                                                visualDensity:
-                                                    VisualDensity.compact,
-                                                showCheckmark: false,
-                                                onSelected: (_) => context
-                                                    .read<ChatCubit>()
-                                                    .react(
-                                                      message,
-                                                      reaction.emoji,
-                                                    ),
-                                              ),
-                                          ],
-                                        ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        '${messageTime(message.displayTime)}${message.editedAt != null && !message.deleted ? ' · Edited' : ''}${mine ? ' · ${message.statusText}' : ''}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelSmall
-                                            ?.copyWith(
-                                              color: mine
-                                                  ? colors.onPrimaryContainer
-                                                        .withValues(alpha: .75)
-                                                  : colors.onSurfaceVariant,
-                                            ),
-                                      ),
-                                      if (message.delivery == Delivery.failed)
-                                        TextButton.icon(
-                                          onPressed: () => context
-                                              .read<ChatCubit>()
-                                              .retry(message),
-                                          icon: const Icon(Icons.refresh),
-                                          label: const Text('Retry'),
-                                        ),
-                                    ],
+                                        if (message.delivery == Delivery.failed)
+                                          TextButton.icon(
+                                            onPressed: () => context
+                                                .read<ChatCubit>()
+                                                .retry(message),
+                                            icon: const Icon(Icons.refresh),
+                                            label: const Text('Retry'),
+                                          ),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                              ),
-                            );
-                          },
-                        ),
-                ),
-                if (context.read<ChatCubit>().replyTo != null)
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _quote(
-                          ReplyPreview.fromMessage(
-                            context.read<ChatCubit>().replyTo!,
+                              );
+                            },
+                          ),
+                  ),
+                  if (context.read<ChatCubit>().replyTo != null)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _quote(
+                            ReplyPreview.fromMessage(
+                              context.read<ChatCubit>().replyTo!,
+                            ),
                           ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: 'Cancel reply',
-                        onPressed: () =>
-                            context.read<ChatCubit>().selectReply(null),
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                if (state.contextMessageId != null)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (state.newerCursor != null)
+                        IconButton(
+                          tooltip: 'Cancel reply',
+                          onPressed: () =>
+                              context.read<ChatCubit>().selectReply(null),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  if (state.contextMessageId != null)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (state.newerCursor != null)
+                          Expanded(
+                            child: TextButton(
+                              onPressed: state.loading || _jumping
+                                  ? null
+                                  : () => context.read<ChatCubit>().loadNewer(),
+                              child: const Text(
+                                'Load newer messages',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ),
                         Expanded(
                           child: TextButton(
                             onPressed: state.loading || _jumping
                                 ? null
-                                : () => context.read<ChatCubit>().loadNewer(),
+                                : () async {
+                                    await context
+                                        .read<ChatCubit>()
+                                        .returnToLatest();
+                                    if (mounted && _scroll.hasClients) {
+                                      _scroll.jumpTo(0);
+                                    }
+                                  },
                             child: const Text(
-                              'Load newer messages',
+                              'Back to latest',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ),
-                      Expanded(
-                        child: TextButton(
-                          onPressed: state.loading || _jumping
-                              ? null
-                              : () async {
-                                  await context
-                                      .read<ChatCubit>()
-                                      .returnToLatest();
-                                  if (mounted && _scroll.hasClients) {
-                                    _scroll.jumpTo(0);
-                                  }
-                                },
-                          child: const Text(
-                            'Back to latest',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                if (_editing != null && _search == null)
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      children: [
-                        const Text('Edit message'),
-                        TextField(
-                          controller: _text,
-                          maxLength: 4000,
-                          minLines: 1,
-                          maxLines: 5,
-                          enabled: !_saving,
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            TextButton(
-                              onPressed: _saving ? null : _cancelEdit,
-                              child: const Text('Cancel'),
-                            ),
-                            TextButton(
-                              onPressed: _saving ? null : _saveEdit,
-                              child: const Text('Save'),
-                            ),
-                          ],
-                        ),
                       ],
                     ),
-                  ),
-                if (_editing == null && _search == null)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-                    child: !state.canSend
-                        ? Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text(
-                              conversation.isGroup
-                                  ? 'Messaging is unavailable for you in this group.'
-                                  : 'Personal messaging is unavailable.',
-                            ),
-                          )
-                        : VoiceInput(
+                  if (_editing != null && _search == null)
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        children: [
+                          const Text('Edit message'),
+                          TextField(
                             controller: _text,
-                            onSend: _send,
-                            busy: false,
-                            attachmentButton: const AttachmentButton(
-                              busy: false,
-                            ),
+                            maxLength: 4000,
+                            minLines: 1,
+                            maxLines: 5,
+                            enabled: !_saving,
                           ),
-                  ),
-              ],
-            );
-          },
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              TextButton(
+                                onPressed: _saving ? null : _cancelEdit,
+                                child: const Text('Cancel'),
+                              ),
+                              TextButton(
+                                onPressed: _saving ? null : _saveEdit,
+                                child: const Text('Save'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (_editing == null && _search == null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                      child: !state.canSend
+                          ? Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Text(
+                                conversation.isGroup
+                                    ? 'Messaging is unavailable for you in this group.'
+                                    : 'Personal messaging is unavailable.',
+                              ),
+                            )
+                          : VoiceInput(
+                              controller: _text,
+                              onSend: _send,
+                              busy: false,
+                              attachmentButton: const AttachmentButton(
+                                busy: false,
+                              ),
+                            ),
+                    ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );

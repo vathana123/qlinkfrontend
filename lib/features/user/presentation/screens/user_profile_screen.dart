@@ -130,6 +130,12 @@ class _ProfileView extends StatelessWidget {
                         title: const Text('Settings'),
                         onTap: () => context.push('/profile/settings'),
                       ),
+                      ListTile(
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        leading: const Icon(Icons.palette_outlined),
+                        title: const Text('Appearance'),
+                        onTap: () => context.push('/profile/appearance'),
+                      ),
                     ],
                   ),
                 ),
